@@ -106,6 +106,15 @@ Proxy_Bink32w/
 - **No CRT in DllMain**: Uses `CreateFileA`/`WriteFile` for logging
 - **Ordinal-only resolution**: `GetProcAddress(h, (LPCSTR)ordinal)` for all Bink functions
 
+## Related projects
+
+These projects inspired the creation of this proxy:
+
+- [dev-zetta/BikMod](https://github.com/dev-zetta/BikMod) — Bink video mod for Command & Conquer
+- [vogonsorg/radgametools](https://github.com/vogonsorg/radgametools) — RAD Game Tools libraries
+- [americusmaximus/Yoink](https://github.com/americusmaximus/Yoink) — Bink proxy for game modding
+- [dimhotepus/Bink-1-and-2-async-media-player](https://github.com/dimhotepus/Bink-1-and-2-async-media-player) — Async media player for Bink 1 and 2
+
 ## License
 
 [CC BY-NC-SA 4.0](LICENSE) — Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International

@@ -106,6 +106,15 @@ Proxy_Bink32w/
 - **DllMain 中不使用 CRT**：使用 `CreateFileA`/`WriteFile` 进行日志记录
 - **仅 ordinal 解析**：所有 Bink 函数使用 `GetProcAddress(h, (LPCSTR)ordinal)`
 
+## 相关项目
+
+以下项目启发了本代理的开发：
+
+- [dev-zetta/BikMod](https://github.com/dev-zetta/BikMod) — Command & Conquer 的 Bink 视频模组
+- [vogonsorg/radgametools](https://github.com/vogonsorg/radgametools) — RAD Game Tools 库
+- [americusmaximus/Yoink](https://github.com/americusmaximus/Yoink) — 用于游戏模组的 Bink 代理
+- [dimhotepus/Bink-1-and-2-async-media-player](https://github.com/dimhotepus/Bink-1-and-2-async-media-player) — Bink 1 和 2 的异步媒体播放器
+
 ## 许可证
 
 [CC BY-NC-SA 4.0](LICENSE) — Creative Commons 署名-非商业性-相同方式共享 4.0 国际许可协议
