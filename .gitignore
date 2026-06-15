@@ -1,0 +1,46 @@
+# CLion
+.idea/
+cmake-build-*/
+*.log
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# Build artifacts
+build/
+x64/
+Win32/
+Debug/
+Release/
+ipch/
+*.aps
+*.pdb
+*.ilk
+*.obj
+*.pch
+*.lib
+*.exp
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.log
+*.lastbuildstate
+*.res
+*.manifest
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.slnx
