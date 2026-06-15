@@ -8,9 +8,7 @@
 
 ## Видео сравнения
 
-| Оригинальный Bink 1.0q | Кастомный Bink 1.9u |
-|---|---|
-| [![Оригинальный 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg)](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | [![Кастомный 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)](https://disk.yandex.ru/i/izkeGHOKPlggGw) |
+> ▶ [Оригинальный Bink 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | ▶ [Кастомный Bink 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)
 
 ## Как работает
 

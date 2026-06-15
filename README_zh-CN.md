@@ -8,9 +8,7 @@
 
 ## 视频对比
 
-| 原始 Bink 1.0q | 自定义 Bink 1.9u |
-|---|---|
-| [![原始 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg)](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | [![自定义 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)](https://disk.yandex.ru/i/izkeGHOKPlggGw) |
+> ▶ [原始 Bink 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | ▶ [自定义 Bink 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)
 
 ## 工作原理
 

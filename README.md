@@ -8,9 +8,7 @@ Originally developed to enable async media player integration in **Command & Con
 
 ## Video comparison
 
-| Original Bink 1.0q | Custom Bink 1.9u |
-|---|---|
-| [![Original 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg)](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | [![Custom 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)](https://disk.yandex.ru/i/izkeGHOKPlggGw) |
+> ▶ [Original Bink 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | ▶ [Custom Bink 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)
 
 ## How it works
 
