@@ -71,18 +71,31 @@ The `BINK_PROXY_LOG` environment variable specifies a custom log file path.
 | Bink Version | Ordinals | Notes |
 |---|---|---|
 | 1.9u | 73 exports | BinkSetVolume@12, BinkSetPan@12 |
-| 1.0q | 83 exports | BinkSetVolume@8, BinkSetPan@8, YUV blit functions |
+| 1.0q | 83 exports | BinkSetVolume@8, BinkSetPan@8, YUV blit functions (ordinals 84–107) |
+
+The `.def` export table contains all 107 exports for both builds. Unused ordinals (e.g. YUV functions in 1.9u) resolve to NULL and silently no-op.
 
 ## @N parameter adapters
 
-Some Bink versions have different function signatures for the same API. The proxy includes wrapper stubs:
+Some Bink versions have different function signatures for the same API. The proxy includes wrapper stubs that adapt between the game's import signature and the real DLL's signature:
 
 **Bink 1.9u:**
-- `_BinkSetVolume@8` (2 params, game import) → `_BinkSetVolume@12` (3 params, real DLL) + `0`
-- `_BinkSetSoundTrack@4` (1 param) → `_BinkSetSoundTrack@8` (2 params) + `0`
+- `_BinkSetVolume@12` (3 params, real DLL) ← `_BinkSetVolume@8` (2 params, game import) + `0`
+- `_BinkSetSoundTrack@8` (2 params, real DLL) ← `_BinkSetSoundTrack@4` (1 param, game import) + `0`
+- `_BinkSetPan@12` (3 params, real DLL) ← `_BinkSetPan@8` (2 params, game import) + `0`
 
 **Bink 1.0q:**
-- `_BinkSetPan@12` (3 params, game import) → `_BinkSetPan@8` (2 params, real DLL)
+- `_BinkSetVolume@8` (2 params, real DLL) ← `_BinkSetVolume@12` (3 params, game import)
+- `_BinkSetPan@8` (2 params, real DLL) ← `_BinkSetPan@12` (3 params, game import)
+- `_BinkSetSoundTrack@4` (1 param, real DLL) ← `_BinkSetSoundTrack@8` (2 params, game import)
+
+## Video scaling
+
+When `BinkCopyToBuffer` is called with a destination smaller than the video resolution, the proxy automatically scales the frame using bilinear interpolation (4 bpp) or nearest-neighbor (2/3 bpp). This allows older games to display high-resolution video in a smaller playback area without modifications.
+
+## Video tracking
+
+The proxy tracks open video handles (up to 32) and their dimensions via `BinkGetSummary`. This enables the scaling logic in `BinkCopyToBuffer` to know the source resolution before rendering.
 
 ## Project structure
 
@@ -90,11 +103,14 @@ Some Bink versions have different function signatures for the same API. The prox
 Proxy_Bink32w/
 ├── CMakeLists.txt           # Two build targets: binkw32_10q and binkw32_19u
 ├── LICENSE                  # CC BY-NC-SA 4.0
-├── src/
-│   ├── binkw32_proxy.cpp    # Main proxy: DllMain + LoadDll + forwarding stubs
-│   ├── exports.def          # DLL export table
-│   └── version_info.rc      # DLL version info
-└── README.md
+├── README.md                # English
+├── README_ru.md             # Русский
+├── README_zh-CN.md          # 简体中文
+├── README_zh-TW.md          # 繁體中文
+└── src/
+    ├── binkw32_proxy.cpp    # Main proxy: DllMain + LoadDll + forwarding stubs
+    ├── exports.def          # DLL export table (107 exports)
+    └── version_info.rc      # DLL version info
 ```
 
 ## Technical details
@@ -105,6 +121,7 @@ Proxy_Bink32w/
 - **Version selection**: Compile-time `#ifdef BINK_10Q` / `BINK_19U` selects ordinal mapping and DLL name
 - **No CRT in DllMain**: Uses `CreateFileA`/`WriteFile` for logging
 - **Ordinal-only resolution**: `GetProcAddress(h, (LPCSTR)ordinal)` for all Bink functions
+- **BinkSetMemory alias**: Exported as alias for `RADSetMemory` (both resolve to the same real DLL function)
 
 ## Related projects
 

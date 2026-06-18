@@ -71,18 +71,23 @@ cmake --build build --config Release
 | Bink 版本 | Ordinals | 备注 |
 |---|---|---|
 | 1.9u | 73 个导出 | BinkSetVolume@12, BinkSetPan@12 |
-| 1.0q | 83 个导出 | BinkSetVolume@8, BinkSetPan@8, YUV blit 函数 |
+| 1.0q | 83 个导出 | BinkSetVolume@8, BinkSetPan@8, YUV blit 函数（ordinal 84–107） |
+
+`.def` 导出表包含两个构建的所有 107 个导出。未使用的 ordinal（如 1.9u 中的 YUV 函数）解析为 NULL 并静默跳过。
 
 ## @N 参数适配器
 
-某些 Bink 版本对相同 API 有不同的函数签名。代理包含包装存根：
+某些 Bink 版本对相同 API 有不同的函数签名。代理包含包装存根，在游戏的导入签名和真实 DLL 的签名之间进行适配：
 
 **Bink 1.9u：**
-- `_BinkSetVolume@8`（2 参数，游戏导入）→ `_BinkSetVolume@12`（3 参数，真实 DLL）+ `0`
-- `_BinkSetSoundTrack@4`（1 参数）→ `_BinkSetSoundTrack@8`（2 参数）+ `0`
+- `_BinkSetVolume@12`（3 参数，真实 DLL）← `_BinkSetVolume@8`（2 参数，游戏导入）+ `0`
+- `_BinkSetSoundTrack@8`（2 参数，真实 DLL）← `_BinkSetSoundTrack@4`（1 参数，游戏导入）+ `0`
+- `_BinkSetPan@12`（3 参数，真实 DLL）← `_BinkSetPan@8`（2 参数，游戏导入）+ `0`
 
 **Bink 1.0q：**
-- `_BinkSetPan@12`（3 参数，游戏导入）→ `_BinkSetPan@8`（2 参数，真实 DLL）
+- `_BinkSetVolume@8`（2 参数，真实 DLL）← `_BinkSetVolume@12`（3 参数，游戏导入）
+- `_BinkSetPan@8`（2 参数，真实 DLL）← `_BinkSetPan@12`（3 参数，游戏导入）
+- `_BinkSetSoundTrack@4`（1 参数，真实 DLL）← `_BinkSetSoundTrack@8`（2 参数，游戏导入）
 
 ## 项目结构
 
@@ -90,12 +95,23 @@ cmake --build build --config Release
 Proxy_Bink32w/
 ├── CMakeLists.txt           # 两个编译目标：binkw32_10q 和 binkw32_19u
 ├── LICENSE                  # CC BY-NC-SA 4.0
-├── src/
-│   ├── binkw32_proxy.cpp    # 主代理：DllMain + LoadDll + 转发存根
-│   ├── exports.def          # DLL 导出表
-│   └── version_info.rc      # DLL 版本信息
-└── README.md
+├── README.md                # English
+├── README_ru.md             # Русский
+├── README_zh-CN.md          # 简体中文
+├── README_zh-TW.md          # 繁體中文
+└── src/
+    ├── binkw32_proxy.cpp    # 主代理：DllMain + LoadDll + 转发存根
+    ├── exports.def          # DLL 导出表（107 个导出）
+    └── version_info.rc      # DLL 版本信息
 ```
+
+## 视频缩放
+
+当 `BinkCopyToBuffer` 的目标缓冲区小于视频分辨率时，代理会自动使用双线性插值（4 bpp）或最近邻插值（2/3 bpp）缩放帧。这允许老游戏在不修改代码的情况下在较小的播放区域中显示高分辨率视频。
+
+## 视频追踪
+
+代理通过 `BinkGetSummary` 跟踪打开的视频句柄（最多 32 个）及其尺寸。这使得 `BinkCopyToBuffer` 中的缩放逻辑能够在渲染前知道源分辨率。
 
 ## 技术细节
 
@@ -105,6 +121,7 @@ Proxy_Bink32w/
 - **版本选择**：编译时 `#ifdef BINK_10Q` / `BINK_19U` 选择 ordinal 映射和 DLL 名称
 - **DllMain 中不使用 CRT**：使用 `CreateFileA`/`WriteFile` 进行日志记录
 - **仅 ordinal 解析**：所有 Bink 函数使用 `GetProcAddress(h, (LPCSTR)ordinal)`
+- **BinkSetMemory 别名**：作为 `RADSetMemory` 的别名导出（两个函数解析为同一个真实 DLL 函数）
 
 ## 相关项目
 

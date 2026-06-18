@@ -71,18 +71,23 @@ cmake --build build --config Release
 | Bink Version | Ordinals | Примечания |
 |---|---|---|
 | 1.9u | 73 экспорта | BinkSetVolume@12, BinkSetPan@12 |
-| 1.0q | 83 экспорта | BinkSetVolume@8, BinkSetPan@8, YUV blit функции |
+| 1.0q | 83 экспорта | BinkSetVolume@8, BinkSetPan@8, YUV blit функции (ordinalls 84–107) |
+
+Таблица `.def` содержит все 107 экспортов для обеих сборок. Неиспользуемые ordinal-ы (напр. YUV функции в 1.9u) резолвятся в NULL и молча пропускаются.
 
 ## Адаптеры @N параметров
 
-Некоторые версии Bink имеют разные сигнатуры для одинаковых API. Прокси включает обёртки:
+Некоторые версии Bink имеют разные сигнатуры для одинаковых API. Прокси включает обёртки, которые адаптируют сигнатуру импорта игры под сигнатуру реальной DLL:
 
 **Bink 1.9u:**
-- `_BinkSetVolume@8` (2 параметра, импорт игры) → `_BinkSetVolume@12` (3 параметра, реальная DLL) + `0`
-- `_BinkSetSoundTrack@4` (1 параметр) → `_BinkSetSoundTrack@8` (2 параметра) + `0`
+- `_BinkSetVolume@12` (3 параметра, реальная DLL) ← `_BinkSetVolume@8` (2 параметра, импорт игры) + `0`
+- `_BinkSetSoundTrack@8` (2 параметра, реальная DLL) ← `_BinkSetSoundTrack@4` (1 параметр, импорт игры) + `0`
+- `_BinkSetPan@12` (3 параметра, реальная DLL) ← `_BinkSetPan@8` (2 параметра, импорт игры) + `0`
 
 **Bink 1.0q:**
-- `_BinkSetPan@12` (3 параметра, импорт игры) → `_BinkSetPan@8` (2 параметра, реальная DLL)
+- `_BinkSetVolume@8` (2 параметра, реальная DLL) ← `_BinkSetVolume@12` (3 параметра, импорт игры)
+- `_BinkSetPan@8` (2 параметра, реальная DLL) ← `_BinkSetPan@12` (3 параметра, импорт игры)
+- `_BinkSetSoundTrack@4` (1 параметр, реальная DLL) ← `_BinkSetSoundTrack@8` (2 параметра, импорт игры)
 
 ## Структура проекта
 
@@ -90,12 +95,23 @@ cmake --build build --config Release
 Proxy_Bink32w/
 ├── CMakeLists.txt           # Два таргета: binkw32_10q и binkw32_19u
 ├── LICENSE                  # CC BY-NC-SA 4.0
-├── src/
-│   ├── binkw32_proxy.cpp    # Основная прокси: DllMain + LoadDll + стабы
-│   ├── exports.def          # Таблица экспорта DLL
-│   └── version_info.rc      # Информация о версии DLL
-└── README.md
+├── README.md                # English
+├── README_ru.md             # Русский
+├── README_zh-CN.md          # 简体中文
+├── README_zh-TW.md          # 繁體中文
+└── src/
+    ├── binkw32_proxy.cpp    # Основная прокси: DllMain + LoadDll + стабы
+    ├── exports.def          # Таблица экспорта DLL (107 экспортов)
+    └── version_info.rc      # Информация о версии DLL
 ```
+
+## Масштабирование видео
+
+При вызове `BinkCopyToBuffer` с буфером назначения меньшим, чем разрешение видео, прокси автоматически масштабирует кадр с помощью билинейной интерполяции (4 bpp) или ближайшего соседа (2/3 bpp). Это позволяет старым играм воспроизводить видео высокого разрешения в меньшей области без модификаций.
+
+## Трекинг видео
+
+Прокси отслеживает открытые видео-хэндлы (до 32) и их размеры через `BinkGetSummary`. Это необходимо для логики масштабирования в `BinkCopyToBuffer`, чтобы знать исходное разрешение перед рендерингом.
 
 ## Технические детали
 
@@ -105,6 +121,7 @@ Proxy_Bink32w/
 - **Выбор версии**: Compile-time `#ifdef BINK_10Q` / `BINK_19U` выбирает маппинг ordinal-ов и имя DLL
 - **Без CRT в DllMain**: Используются `CreateFileA`/`WriteFile` для логирования
 - **Ordinal-only резолюция**: `GetProcAddress(h, (LPCSTR)ordinal)` для всех Bink функций
+- **Алиас BinkSetMemory**: Экспортируется как алиас для `RADSetMemory` (обе функции резолвятся в одну реальную DLL функцию)
 
 ## Связанные проекты
 

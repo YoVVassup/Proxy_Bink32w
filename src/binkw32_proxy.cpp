@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 static HMODULE g_hR = NULL;
 
@@ -85,7 +86,7 @@ static void Log(const char* msg) {
         if (!logged_header) {
             DWORD bw;
             const char* header =
-                "=== Proxy_Bink32w v1.0.0 ===\r\n"
+                "=== Proxy_Bink32w v1.0.1 ===\r\n"
 #ifdef BINK_10Q
                 "Target: Bink 1.0q\r\n"
 #else
@@ -131,7 +132,7 @@ static BOOL LoadDll() {
     if (!g_hR) {
         LogF("FAILED to load real DLL: %s (error %lu)", dllPath, GetLastError());
         char msg[MAX_PATH + 64];
-        wsprintfA(msg, "Proxy_Bink32w v1.0.0\nFailed to load real Bink DLL:\n%s", dllPath);
+        wsprintfA(msg, "Proxy_Bink32w v1.0.1\nFailed to load real Bink DLL:\n%s", dllPath);
         MessageBoxA(NULL, msg, "binkw32.dll", MB_OK | MB_ICONERROR);
         return FALSE;
     }
@@ -228,6 +229,19 @@ static BOOL LoadDll() {
     return TRUE;
 }
 
+struct VideoInfo {
+    void* handle;
+    uint32_t width;
+    uint32_t height;
+    void* tempBuf;
+    int tempPitch;
+    int tempHeight;
+};
+
+#define MAX_TRACKED 32
+static VideoInfo g_vids[MAX_TRACKED];
+static int g_vidCount = 0;
+
 BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID) {
     switch (reason) {
     case DLL_PROCESS_ATTACH:
@@ -241,11 +255,145 @@ BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID) {
         LoadDll();
         break;
     case DLL_PROCESS_DETACH:
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].tempBuf) VirtualFree(g_vids[i].tempBuf, 0, MEM_RELEASE);
+        }
+        g_vidCount = 0;
         if (g_hR) { FreeLibrary(g_hR); g_hR = NULL; }
         if (g_log != INVALID_HANDLE_VALUE) { CloseHandle(g_log); g_log = INVALID_HANDLE_VALUE; }
         break;
     }
     return TRUE;
+}
+
+static void TrackVideo(void* h) {
+    if (!h || !pBinkGetSummary) return;
+    unsigned char summary[512];
+    memset(summary, 0, sizeof(summary));
+    ((void(__stdcall*)(void*, void*))pBinkGetSummary)(h, summary);
+    uint32_t w = *(uint32_t*)(summary);
+    uint32_t hv = *(uint32_t*)(summary + 4);
+    if (w > 0 && hv > 0 && g_vidCount < MAX_TRACKED) {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].handle == h) {
+                g_vids[i].width = w;
+                g_vids[i].height = hv;
+                LogF("Updated video: %p %ux%u", h, w, hv);
+                return;
+            }
+        }
+        g_vids[g_vidCount].handle = h;
+        g_vids[g_vidCount].width = w;
+        g_vids[g_vidCount].height = hv;
+        g_vids[g_vidCount].tempBuf = 0;
+        g_vids[g_vidCount].tempPitch = 0;
+        g_vids[g_vidCount].tempHeight = 0;
+        g_vidCount++;
+        LogF("Tracked video: %p %ux%u", h, w, hv);
+    }
+}
+
+static void UntrackVideo(void* h) {
+    for (int i = 0; i < g_vidCount; i++) {
+        if (g_vids[i].handle == h) {
+            if (g_vids[i].tempBuf) VirtualFree(g_vids[i].tempBuf, 0, MEM_RELEASE);
+            g_vids[i] = g_vids[g_vidCount - 1];
+            g_vidCount--;
+            return;
+        }
+    }
+}
+
+static VideoInfo* FindVideo(void* h) {
+    for (int i = 0; i < g_vidCount; i++) {
+        if (g_vids[i].handle == h) return &g_vids[i];
+    }
+    return 0;
+}
+
+static int BppFromFlags(int flags) {
+    int st = flags & 7;
+    if (st == 0) return 3;
+    if (st <= 4) return 2;
+    return 4;
+}
+
+static void ScaleNN(const uint8_t* src, int sw, int sh, int sp,
+                     uint8_t* dst, int dw, int dh, int dp, int bpp) {
+    if (dw <= 0 || dh <= 0) return;
+    for (int y = 0; y < dh; y++) {
+        int sy = y * sh / dh;
+        if (sy >= sh) sy = sh - 1;
+        const uint8_t* sr = src + sy * sp;
+        uint8_t* dr = dst + y * dp;
+        for (int x = 0; x < dw; x++) {
+            int sx = x * sw / dw;
+            if (sx >= sw) sx = sw - 1;
+            memcpy(dr + x * bpp, sr + sx * bpp, bpp);
+        }
+    }
+}
+
+static void ScaleBilinear(const uint8_t* src, int sw, int sh, int sp,
+                           uint8_t* dst, int dw, int dh, int dp, int bpp) {
+    if (dw <= 0 || dh <= 0) return;
+
+    if (bpp == 2) {
+        for (int y = 0; y < dh; y++) {
+            int sy = y * sh / dh;
+            if (sy >= sh) sy = sh - 1;
+            const uint8_t* sr = src + sy * sp;
+            uint8_t* dr = dst + y * dp;
+            for (int x = 0; x < dw; x++) {
+                int sx = x * sw / dw;
+                if (sx >= sw) sx = sw - 1;
+                memcpy(dr + x * 2, sr + sx * 2, 2);
+            }
+        }
+    } else if (bpp == 4) {
+        for (int y = 0; y < dh; y++) {
+            int sy = y * sh / dh;
+            int sy2 = sy + 1 < sh ? sy + 1 : sy;
+            int fy = ((y * sh) % dh) * 256 / dh;
+            int ify = 256 - fy;
+
+            const uint8_t* r0 = src + sy * sp;
+            const uint8_t* r1 = src + sy2 * sp;
+            uint8_t* dr = dst + y * dp;
+
+            for (int x = 0; x < dw; x++) {
+                int sx = x * sw / dw;
+                int sx2 = sx + 1 < sw ? sx + 1 : sx;
+                int fx = ((x * sw) % dw) * 256 / dw;
+                int ifx = 256 - fx;
+
+                for (int c = 0; c < 4; c++) {
+                    int p00 = r0[sx * 4 + c];
+                    int p10 = r1[sx * 4 + c];
+                    int p01 = r0[sx2 * 4 + c];
+                    int p11 = r1[sx2 * 4 + c];
+
+                    int top = p00 * ifx + p10 * fx;
+                    int bot = p01 * ifx + p11 * fx;
+                    int val = top * ify + bot * fy;
+
+                    dr[x * 4 + c] = (uint8_t)((val + 32768) >> 16);
+                }
+            }
+        }
+    } else {
+        for (int y = 0; y < dh; y++) {
+            int sy = y * sh / dh;
+            if (sy >= sh) sy = sh - 1;
+            const uint8_t* sr = src + sy * sp;
+            uint8_t* dr = dst + y * dp;
+            for (int x = 0; x < dw; x++) {
+                int sx = x * sw / dw;
+                if (sx >= sw) sx = sw - 1;
+                memcpy(dr + x * bpp, sr + sx * bpp, bpp);
+            }
+        }
+    }
 }
 
 extern "C" {
@@ -272,6 +420,7 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
     LogF("BinkOpen(%p,%p) ptr=%p", a, b, p);
     intptr_t r = p ? ((intptr_t(__stdcall*)(void*,void*))p)(a, b) : 0;
     LogF("BinkOpen->%p", (void*)r);
+    if (r) TrackVideo((void*)r);
     return r;
 }
 
@@ -306,6 +455,7 @@ intptr_t __stdcall sBinkWait(void* a) {
 void __stdcall sBinkClose(void* a) {
     void* p = pBinkClose;
     LogF("BinkClose(%p)", a);
+    UntrackVideo(a);
     if (p) ((void(__stdcall*)(void*))p)(a);
 }
 
@@ -317,7 +467,52 @@ intptr_t __stdcall sBinkPause(void* a, void* b) {
 intptr_t __stdcall sBinkCopyToBuffer(void* a, void* b, void* c, void* d, void* e, void* f, void* g) {
     void* p = pBinkCopyToBuffer;
     LogF("BinkCopyToBuffer(%p,...)", a);
-    return p ? ((intptr_t(__stdcall*)(void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g) : 0;
+    if (!p) return 0;
+
+    VideoInfo* vi = FindVideo(a);
+    if (vi) {
+        int dstPitch = (int)(intptr_t)c;
+        int dstHeight = (int)(intptr_t)d;
+        int destX = (int)(intptr_t)e;
+        int destY = (int)(intptr_t)f;
+        int flags = (int)(intptr_t)g;
+        int bpp = BppFromFlags(flags);
+
+        if (bpp > 0 && dstPitch > 0 && dstHeight > 0) {
+            int dstW = dstPitch / bpp;
+            int needScale = (vi->width > (uint32_t)dstW || vi->height > (uint32_t)dstHeight);
+
+                if (needScale) {
+                int srcPitch = vi->width * bpp;
+                srcPitch = (srcPitch + 15) & ~15;
+                int srcH = vi->height;
+                SIZE_T requiredSize = (SIZE_T)srcPitch * srcH;
+
+                if (!vi->tempBuf || vi->tempPitch != srcPitch || vi->tempHeight != srcH) {
+                    if (vi->tempBuf) VirtualFree(vi->tempBuf, 0, MEM_RELEASE);
+                    vi->tempBuf = VirtualAlloc(0, requiredSize, MEM_COMMIT, PAGE_READWRITE);
+                    vi->tempPitch = srcPitch;
+                    vi->tempHeight = srcH;
+                }
+
+                if (vi->tempBuf) {
+                    LogF("Scaling %ux%u -> %dx%d (bpp=%d)", vi->width, vi->height, dstW, dstHeight, bpp);
+
+                    intptr_t result = ((intptr_t(__stdcall*)(void*,void*,void*,void*,void*,void*,void*))p)(
+                        a, vi->tempBuf, (void*)(intptr_t)srcPitch,
+                        (void*)(intptr_t)srcH, (void*)0, (void*)0, g);
+
+                    ScaleBilinear((const uint8_t*)vi->tempBuf, vi->width, vi->height, srcPitch,
+                            (uint8_t*)b + destY * dstPitch + destX * bpp,
+                            dstW - destX, dstHeight - destY, dstPitch, bpp);
+
+                    return result;
+                }
+            }
+        }
+    }
+
+    return ((intptr_t(__stdcall*)(void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g);
 }
 
 intptr_t __stdcall sBinkCopyToBufferRect(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) {
@@ -466,6 +661,7 @@ intptr_t __stdcall sBinkGetTrackID(void* a, void* b) {
 
 void __stdcall sBinkGetSummary(void* a, void* b) {
     void* p = pBinkGetSummary;
+    LogF("BinkGetSummary(%p,%p)", a, b);
     if (p) ((void(__stdcall*)(void*,void*))p)(a, b);
 }
 
