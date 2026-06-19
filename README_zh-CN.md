@@ -6,21 +6,12 @@
 
 最初开发用于在 **Command & Conquer: Red Alert 2 Yuri's Revenge**（Mental Omega 模组）中集成异步媒体播放器，但适用于任何使用 Bink 视频 SDK 的应用程序。
 
-## 视频对比
-
-> ▶ [原始 Bink 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | ▶ [自定义 Bink 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)
-
 ## 工作原理
 
 1. 应用程序从工作目录加载 `binkw32.dll`（我们的代理）
-2. `DllMain` 解析游戏可执行文件路径，从同一目录加载真实的 Bink DLL（`binkw32_1.0q.dll` 或 `binkw32_1.9u.dll`）
+2. `DllMain` 解析游戏可执行文件路径，从同一目录加载真实的 Bink DLL
 3. 所有 Bink API 函数通过 **ordinal** 从真实 DLL 解析
 4. 应用程序调用我们导出的存根，通过 `__stdcall` 函数指针直接转发到真实 DLL
-
-```
-gamemd.exe → binkw32.dll（代理）→ binkw32_1.0q.dll（真实 Bink SDK）
-gamemd.exe → binkw32.dll（代理）→ binkw32_1.9u.dll（真实 Bink SDK）
-```
 
 ## 环境要求
 
@@ -30,104 +21,103 @@ gamemd.exe → binkw32.dll（代理）→ binkw32_1.9u.dll（真实 Bink SDK）
 ## 编译
 
 ```bash
-cmake -B build -G "Visual Studio 18 2022" -A Win32
+cmake -B build -G "Visual Studio 18 2026" -A Win32
 cmake --build build --config Release
 ```
 
-两个编译目标：
+## 音频替换
 
-| 目标 | 输出 | 说明 |
-|---|---|---|
-| `binkw32_10q` | `build/BINK_10Q/Release/binkw32.dll` | Bink 1.0q 代理（83 个 ordinal 导出） |
-| `binkw32_19u` | `build/BINK_19U/Release/binkw32.dll` | Bink 1.9u 代理（73 个 ordinal 导出） |
+将任何 `.bik` 视频的音轨替换为自定义 `.wav` 文件。代理通过 LMD（Local Mix Database）CRC32 解析自动检测 `.mix` 归档中的 `.bik` 文件。
 
-## 安装
+### 配置
 
-1. 将对应的 `binkw32.dll` 从 `build/BINK_10Q/` 或 `build/BINK_19U/` 复制到游戏目录
-2. 复制对应的真实 Bink DLL：
-   - 1.0q 编译：将 `binkw32_1.0q.dll` 放入游戏目录
-   - 1.9u 编译：将 `binkw32_1.9u.dll` 放入游戏目录
-3. 启动游戏
+在 DLL 目录创建 `binkw32.cfg`：
 
-若缺少真实 DLL，将显示错误对话框。
+```ini
+[exception]
+0=movies01.mix
+1=movies02.mix
+
+[movies01]
+a01_f00e.bik = BinkWAV\a01_f00e.wav
+a02_f00e.bik = BinkWAV\a02_f00e.wav
+
+[movies02]
+s01_f00e.bik = BinkWAV\s01_f00e.wav
+s02_f00e.bik = BinkWAV\s02_f00e.wav
+
+[audio]
+; 全局回退（当 exception 中未找到时使用）
+s01_f00e.bik = BinkWAV\s01_f00e.wav
+```
+
+### 优先级
+
+`[exception]` 段的优先级**高于** `[audio]`。代理首先检查 `.mix` 归档名是否匹配 exception 条目，然后在该 exception 段中查找 `.bik` 文件名。如果未找到，则回退到全局 `[audio]` 段。
+
+保留的段名（`[audio]`、`[exception]`、`[log]`）不能用作 `.mix` exception 段名。
+
+### 工作流程
+
+1. 调用 `BinkOpen` 时，代理解析 `.mix` 归档头和 LMD
+2. CRC32 哈希解析为原始 `.bik` 文件名
+3. 文件名先与 `[exception]`（按 `.mix` 名称）匹配，再与 `[audio]` 匹配
+4. 如果找到映射，加载 `.wav` 文件并通过 WaveOut 播放
+5. 替换视频的 Bink 音频自动静音
+6. `BinkClose` 时停止 `.wav` 播放
+
+### 支持格式
+
+- WAV 文件：PCM，8/16/24 位，任意采样率，单声道/立体声
+- 相对路径（从 DLL 目录）和绝对路径
+
+## .mix 归档解析
+
+代理解析 RA2/YR `.mix` 归档格式：
+
+- 头部：4 字节保留 + offset 4 处的 `uint16` 文件计数
+- offset `0xA` 处的哈希表（每条目 12 字节：CRC32 + offset + size）
+- LMD 文件（CRC32 `0x366E051F`）包含 CRC32 → 文件名映射
+- CRC32 按 RA2 约定计算：大写 + 填充到 4 字节对齐
+
+## 视频缩放
+
+当 `BinkCopyToBuffer` 的目标缓冲区小于视频分辨率时，代理使用**保持宽高比的适配缩放**（类似 CSS `object-fit: contain`）自动缩放帧。视频在目标缓冲区中居中，必要时添加黑边。
 
 ## 日志记录
 
-日志文件 `binkw32_proxy.log` 创建在 DLL 所在目录。
+日志文件 `binkw32_proxy.log` 创建在 DLL 目录。
 
 ### 禁用日志
-
-两种方式可在不重新编译的情况下禁用日志：
 
 1. **文件** — 在 DLL 目录中创建空的 `binkw32.nolog` 文件
 2. **环境变量** — 设置 `BINK_PROXY_LOG=0`
 
-### 自定义路径
+### 调用栈日志
 
-环境变量 `BINK_PROXY_LOG` 可指定自定义的日志文件路径。
-
-## 兼容性
-
-| Bink 版本 | Ordinals | 备注 |
-|---|---|---|
-| 1.9u | 73 个导出 | BinkSetVolume@12, BinkSetPan@12 |
-| 1.0q | 83 个导出 | BinkSetVolume@8, BinkSetPan@8, YUV blit 函数（ordinal 84–107） |
-
-`.def` 导出表包含两个构建的所有 107 个导出。未使用的 ordinal（如 1.9u 中的 YUV 函数）解析为 NULL 并静默跳过。
-
-## @N 参数适配器
-
-某些 Bink 版本对相同 API 有不同的函数签名。代理包含包装存根，在游戏的导入签名和真实 DLL 的签名之间进行适配：
-
-**Bink 1.9u：**
-- `_BinkSetVolume@12`（3 参数，真实 DLL）← `_BinkSetVolume@8`（2 参数，游戏导入）+ `0`
-- `_BinkSetSoundTrack@8`（2 参数，真实 DLL）← `_BinkSetSoundTrack@4`（1 参数，游戏导入）+ `0`
-- `_BinkSetPan@12`（3 参数，真实 DLL）← `_BinkSetPan@8`（2 参数，游戏导入）+ `0`
-
-**Bink 1.0q：**
-- `_BinkSetVolume@8`（2 参数，真实 DLL）← `_BinkSetVolume@12`（3 参数，游戏导入）
-- `_BinkSetPan@8`（2 参数，真实 DLL）← `_BinkSetPan@12`（3 参数，游戏导入）
-- `_BinkSetSoundTrack@4`（1 参数，真实 DLL）← `_BinkSetSoundTrack@8`（2 参数，游戏导入）
+调用 `BinkOpen` 时，代理记录包含模块和 RVA 信息的调用栈，帮助识别游戏代码中哪部分发起了视频播放。
 
 ## 项目结构
 
 ```
 Proxy_Bink32w/
-├── CMakeLists.txt           # 两个编译目标：binkw32_10q 和 binkw32_19u
+├── CMakeLists.txt
 ├── LICENSE                  # CC BY-NC-SA 4.0
 ├── README.md                # English
 ├── README_ru.md             # Русский
 ├── README_zh-CN.md          # 简体中文
 ├── README_zh-TW.md          # 繁體中文
+├── binkw32.cfg              # 音频替换配置
 └── src/
-    ├── binkw32_proxy.cpp    # 主代理：DllMain + LoadDll + 转发存根
+    ├── binkw32_proxy.cpp    # 主代理 + 音频 + .mix 解析器
     ├── exports.def          # DLL 导出表（107 个导出）
     └── version_info.rc      # DLL 版本信息
 ```
 
-## 视频缩放
-
-当 `BinkCopyToBuffer` 的目标缓冲区小于视频分辨率时，代理会自动使用双线性插值（4 bpp）或最近邻插值（2/3 bpp）缩放帧。这允许老游戏在不修改代码的情况下在较小的播放区域中显示高分辨率视频。
-
-## 视频追踪
-
-代理通过 `BinkGetSummary` 跟踪打开的视频句柄（最多 32 个）及其尺寸。这使得 `BinkCopyToBuffer` 中的缩放逻辑能够在渲染前知道源分辨率。
-
-## 技术细节
-
-- **平台**：Win32 (x86)
-- **调用约定**：所有存根使用 `extern "C" __stdcall`
-- **导出**：通过 `.def` 文件定义，带有明确的 `@N` 装饰
-- **版本选择**：编译时 `#ifdef BINK_10Q` / `BINK_19U` 选择 ordinal 映射和 DLL 名称
-- **DllMain 中不使用 CRT**：使用 `CreateFileA`/`WriteFile` 进行日志记录
-- **仅 ordinal 解析**：所有 Bink 函数使用 `GetProcAddress(h, (LPCSTR)ordinal)`
-- **BinkSetMemory 别名**：作为 `RADSetMemory` 的别名导出（两个函数解析为同一个真实 DLL 函数）
-
 ## 相关项目
 
-以下项目启发了本代理的开发：
-
 - [dev-zetta/BikMod](https://github.com/dev-zetta/BikMod) — Command & Conquer 的 Bink 视频模组
+- [Aldrin-John-Olaer-Manalansan/RA2YR-reMIXer](https://github.com/Aldrin-John-Olaer-Manalansan/RA2YR-reMIXer) — MIX 文件解保护工具，支持 LMD 恢复
 - [vogonsorg/radgametools](https://github.com/vogonsorg/radgametools) — RAD Game Tools 库
 - [americusmaximus/Yoink](https://github.com/americusmaximus/Yoink) — 用于游戏模组的 Bink 代理
 - [dimhotepus/Bink-1-and-2-async-media-player](https://github.com/dimhotepus/Bink-1-and-2-async-media-player) — Bink 1 和 2 的异步媒体播放器

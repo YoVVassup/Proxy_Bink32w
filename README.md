@@ -6,10 +6,6 @@ A drop-in `binkw32.dll` proxy that intercepts Bink video API calls between an ap
 
 Originally developed to enable async media player integration in **Command & Conquer: Red Alert 2 Yuri's Revenge** (Mental Omega mod), but works with any application that uses the Bink video SDK.
 
-## Video comparison
-
-> ▶ [Original Bink 1.0q](https://disk.yandex.ru/i/akwI_OxaeQaPvg) | ▶ [Custom Bink 1.9u](https://disk.yandex.ru/i/izkeGHOKPlggGw)
-
 ## How it works
 
 1. The application loads `binkw32.dll` (our proxy) from its working directory
@@ -30,7 +26,7 @@ gamemd.exe → binkw32.dll (proxy) → binkw32_1.9u.dll (real Bink SDK)
 ## Building
 
 ```bash
-cmake -B build -G "Visual Studio 18 2022" -A Win32
+cmake -B build -G "Visual Studio 18 2026" -A Win32
 cmake --build build --config Release
 ```
 
@@ -38,8 +34,8 @@ Two targets are built:
 
 | Target | Output | Description |
 |---|---|---|
-| `binkw32_10q` | `build/BINK_10Q/Release/binkw32.dll` | Proxy for Bink 1.0q (83 ordinal exports) |
-| `binkw32_19u` | `build/BINK_19U/Release/binkw32.dll` | Proxy for Bink 1.9u (73 ordinal exports) |
+| `binkw32_10q` | `build/BINK_10Q/Release/binkw32.dll` | Proxy for Bink 1.0q |
+| `binkw32_19u` | `build/BINK_19U/Release/binkw32.dll` | Proxy for Bink 1.9u |
 
 ## Installation
 
@@ -50,6 +46,68 @@ Two targets are built:
 3. Launch the game
 
 If the real DLL is missing, a dialog with an error message will appear.
+
+## Audio replacement
+
+Replace the audio track of any `.bik` video with a custom `.wav` file. The proxy automatically detects `.bik` files inside `.mix` archives using LMD (Local Mix Database) CRC32 resolution.
+
+### Configuration
+
+Create `binkw32.cfg` in the DLL directory:
+
+```ini
+[exception]
+0=movies01.mix
+1=movies02.mix
+
+[movies01]
+a01_f00e.bik = BinkWAV\a01_f00e.wav
+a02_f00e.bik = BinkWAV\a02_f00e.wav
+
+[movies02]
+s01_f00e.bik = BinkWAV\s01_f00e.wav
+s02_f00e.bik = BinkWAV\s02_f00e.wav
+
+[audio]
+; Global fallback (used when no exception match)
+s01_f00e.bik = BinkWAV\s01_f00e.wav
+```
+
+### Priority
+
+The `[exception]` section has **higher priority** than `[audio]`. When a video is opened, the proxy first checks if the `.mix` archive name matches an exception entry, then looks for the `.bik` filename within that exception section. If not found, it falls back to the global `[audio]` section.
+
+Reserved section names (`[audio]`, `[exception]`, `[log]`) cannot be used as `.mix` exception section names.
+
+### How it works
+
+1. When `BinkOpen` is called, the proxy parses the `.mix` archive header and LMD
+2. The CRC32 hash is resolved to the original `.bik` filename
+3. The filename is matched against `[exception]` (by `.mix` name) first, then `[audio]`
+4. If a mapping exists, the `.wav` file is loaded and played via WaveOut
+5. Bink audio is automatically muted (`BinkSetVolume` → 0) for the replaced video
+6. The `.wav` playback stops when `BinkClose` is called
+
+### Supported formats
+
+- WAV files: PCM, 8/16/24 bit, any sample rate, mono/stereo
+- Relative paths (from DLL directory) and absolute paths
+
+## .mix archive parsing
+
+The proxy parses RA2/YR `.mix` archive format:
+
+- Header: 4 bytes reserved + `uint16` file count at offset 4
+- Hash table at offset `0xA` (12 bytes per entry: CRC32 + offset + size)
+- LMD file (CRC32 `0x366E051F`) contains CRC32 → filename mappings
+- CRC32 is computed with RA2 convention: uppercase + padding to 4-byte alignment
+
+## Video scaling
+
+When `BinkCopyToBuffer` is called with a destination smaller than the video resolution, the proxy automatically scales the frame using **aspect-ratio-preserving fit scaling** (like CSS `object-fit: contain`). The video is centered within the destination buffer with black bars if needed.
+
+- Bilinear interpolation for 4 bpp (32-bit) surfaces
+- Nearest-neighbor for 2/3 bpp surfaces
 
 ## Logging
 
@@ -66,68 +124,53 @@ Two ways to disable logging without recompiling:
 
 The `BINK_PROXY_LOG` environment variable specifies a custom log file path.
 
+### Log options
+
+In `binkw32.cfg`:
+
+```ini
+[log]
+wait = true    ; log BinkWait calls (default: false)
+```
+
 ## Compatibility
 
-| Bink Version | Ordinals | Notes |
-|---|---|---|
-| 1.9u | 73 exports | BinkSetVolume@12, BinkSetPan@12 |
-| 1.0q | 83 exports | BinkSetVolume@8, BinkSetPan@8, YUV blit functions (ordinals 84–107) |
+| Bink Version | Notes |
+|---|---|
+| 1.9u | BinkSetVolume@12, BinkSetPan@12 |
+| 1.0q | BinkSetVolume@8, BinkSetPan@8, YUV blit functions |
 
-The `.def` export table contains all 107 exports for both builds. Unused ordinals (e.g. YUV functions in 1.9u) resolve to NULL and silently no-op.
+The `.def` export table contains all 107 exports for both builds. Unused ordinals resolve to NULL and silently no-op.
 
 ## @N parameter adapters
 
-Some Bink versions have different function signatures for the same API. The proxy includes wrapper stubs that adapt between the game's import signature and the real DLL's signature:
+Some Bink versions have different function signatures for the same API. The proxy includes wrapper stubs that adapt between the game's import signature and the real DLL's signature.
 
-**Bink 1.9u:**
-- `_BinkSetVolume@12` (3 params, real DLL) ← `_BinkSetVolume@8` (2 params, game import) + `0`
-- `_BinkSetSoundTrack@8` (2 params, real DLL) ← `_BinkSetSoundTrack@4` (1 param, game import) + `0`
-- `_BinkSetPan@12` (3 params, real DLL) ← `_BinkSetPan@8` (2 params, game import) + `0`
+## Call stack logging
 
-**Bink 1.0q:**
-- `_BinkSetVolume@8` (2 params, real DLL) ← `_BinkSetVolume@12` (3 params, game import)
-- `_BinkSetPan@8` (2 params, real DLL) ← `_BinkSetPan@12` (3 params, game import)
-- `_BinkSetSoundTrack@4` (1 param, real DLL) ← `_BinkSetSoundTrack@8` (2 params, game import)
-
-## Video scaling
-
-When `BinkCopyToBuffer` is called with a destination smaller than the video resolution, the proxy automatically scales the frame using bilinear interpolation (4 bpp) or nearest-neighbor (2/3 bpp). This allows older games to display high-resolution video in a smaller playback area without modifications.
-
-## Video tracking
-
-The proxy tracks open video handles (up to 32) and their dimensions via `BinkGetSummary`. This enables the scaling logic in `BinkCopyToBuffer` to know the source resolution before rendering.
+When `BinkOpen` is called with a file handle, the proxy logs the call stack with module + RVA information, helping identify which part of the game code initiated the video playback.
 
 ## Project structure
 
 ```
 Proxy_Bink32w/
-├── CMakeLists.txt           # Two build targets: binkw32_10q and binkw32_19u
+├── CMakeLists.txt
 ├── LICENSE                  # CC BY-NC-SA 4.0
 ├── README.md                # English
 ├── README_ru.md             # Русский
 ├── README_zh-CN.md          # 简体中文
 ├── README_zh-TW.md          # 繁體中文
+├── binkw32.cfg              # Audio replacement config
 └── src/
-    ├── binkw32_proxy.cpp    # Main proxy: DllMain + LoadDll + forwarding stubs
+    ├── binkw32_proxy.cpp    # Main proxy + audio + mix parser
     ├── exports.def          # DLL export table (107 exports)
     └── version_info.rc      # DLL version info
 ```
 
-## Technical details
-
-- **Platform**: Win32 (x86)
-- **Calling convention**: All stubs use `extern "C" __stdcall`
-- **Exports**: Defined via `.def` file with explicit `@N` decorations
-- **Version selection**: Compile-time `#ifdef BINK_10Q` / `BINK_19U` selects ordinal mapping and DLL name
-- **No CRT in DllMain**: Uses `CreateFileA`/`WriteFile` for logging
-- **Ordinal-only resolution**: `GetProcAddress(h, (LPCSTR)ordinal)` for all Bink functions
-- **BinkSetMemory alias**: Exported as alias for `RADSetMemory` (both resolve to the same real DLL function)
-
 ## Related projects
 
-These projects inspired the creation of this proxy:
-
 - [dev-zetta/BikMod](https://github.com/dev-zetta/BikMod) — Bink video mod for Command & Conquer
+- [Aldrin-John-Olaer-Manalansan/RA2YR-reMIXer](https://github.com/Aldrin-John-Olaer-Manalansan/RA2YR-reMIXer) — MIX file unprotector with LMD recovery
 - [vogonsorg/radgametools](https://github.com/vogonsorg/radgametools) — RAD Game Tools libraries
 - [americusmaximus/Yoink](https://github.com/americusmaximus/Yoink) — Bink proxy for game modding
 - [dimhotepus/Bink-1-and-2-async-media-player](https://github.com/dimhotepus/Bink-1-and-2-async-media-player) — Async media player for Bink 1 and 2
