@@ -27,7 +27,7 @@ cmake --build build --config Release
 
 ## 音訊替換
 
-將任何 `.bik` 視訊的音軌替換為自訂 `.wav` 檔案。代理透過 LMD（Local Mix Database）CRC32 解析自動偵測 `.mix` 壓縮檔中的 `.bik` 檔案。
+將任何 `.bik` 視訊的音軌替換為自訂 `.wav` 或 `.ogg` 檔案。代理透過 LMD（Local Mix Database）CRC32 解析自動偵測 `.mix` 壓縮檔中的 `.bik` 檔案。
 
 ### 設定
 
@@ -40,11 +40,17 @@ cmake --build build --config Release
 
 [movies01]
 a01_f00e.bik = BinkWAV\a01_f00e.wav
-a02_f00e.bik = BinkWAV\a02_f00e.wav
+a02_f00e.bik = BinkWAV\a02_f00e.ogg
 
 [movies02]
 s01_f00e.bik = BinkWAV\s01_f00e.wav
-s02_f00e.bik = BinkWAV\s02_f00e.wav
+s02_f00e.bik = BinkWAV\s02_f00e.ogg
+
+[video]
+; 視訊縮放模式（預設：bilinear）
+; 選項：nearest、bilinear、area、sharpen-area、sharpen-bilinear、
+;       scanline、sharpen、color-dither、crt-scanline
+scale_mode=bilinear
 
 [audio]
 ; 全域回退（當 exception 中未找到時使用）
@@ -55,20 +61,21 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 
 `[exception]` 段的優先順序**高於** `[audio]`。代理首先檢查 `.mix` 壓縮檔名是否匹配 exception 條目，然後在該 exception 段中尋找 `.bik` 檔案名。如果未找到，則回退到全域 `[audio]` 段。
 
-保留的段名（`[audio]`、`[exception]`、`[log]`）不能用作 `.mix` exception 段名。
+保留的段名（`[audio]`、`[exception]`、`[log]`、`[video]`）不能用作 `.mix` exception 段名。
 
 ### 運作流程
 
 1. 呼叫 `BinkOpen` 時，代理解析 `.mix` 壓縮檔標頭和 LMD
 2. CRC32 雜湊解析為原始 `.bik` 檔案名
 3. 檔案名先與 `[exception]`（按 `.mix` 名稱）匹配，再與 `[audio]` 匹配
-4. 如果找到對應，載入 `.wav` 檔案並透過 WaveOut 播放
+4. 如果找到對應，載入 `.wav` 或 `.ogg` 檔案並解碼為 PCM 透過 WaveOut 播放
 5. 替換視訊的 Bink 音訊自動靜音
 6. `BinkClose` 時停止 `.wav` 播放
 
 ### 支援格式
 
 - WAV 檔案：PCM，8/16/24 位元，任意取樣率，單聲道/立體聲
+- OGG：Vorbis，任意取樣率，單聲道/立體聲（透過 stb_vorbis）
 - 相對路徑（從 DLL 目錄）和絕對路徑
 
 ## .mix 壓縮檔解析
@@ -84,14 +91,33 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 
 當 `BinkCopyToBuffer` 的目標緩衝區小於視訊解析度時，代理使用**保持寬高比的適配縮放**（類似 CSS `object-fit: contain`）自動縮放影格。視訊在目標緩衝區中置中，必要時加上黑邊。
 
+9 種縮放演算法可用：
+
+| 模式 | 說明 |
+|---|---|
+| `nearest` | 最近鄰 |
+| `bilinear` | 雙線性插值（預設） |
+| `area` | 區域平均（方塊濾波） |
+| `sharpen-area` | 區域 + 邊緣感知銳化 |
+| `sharpen-bilinear` | 預銳化 + 雙線性 |
+| `scanline` | 雙線性 + 交替列暗化 |
+| `sharpen` | 雙線性 + 銳化遮罩 |
+| `color-dither` | Bayer 4x4 抖動 |
+| `crt-scanline` | 雙線性 + 柔和 CRT 掃描線效果 |
+
 ## 日誌記錄
 
 日誌檔案 `binkw32_proxy.log` 建立在 DLL 目錄。
 
-### 停用日誌
+### 日誌選項
 
-1. **檔案** — 在 DLL 目錄中建立空的 `binkw32.nolog` 檔案
-2. **環境變數** — 設定 `BINK_PROXY_LOG=0`
+在 `binkw32.cfg` 中：
+
+```ini
+[log]
+enabled = false   ; 停用所有日誌記錄（預設：true）
+wait = true       ; 記錄 BinkWait 呼叫（預設：false）
+```
 
 ### 呼叫堆疊日誌
 
@@ -109,7 +135,15 @@ Proxy_Bink32w/
 ├── README_zh-TW.md          # 繁體中文
 ├── binkw32.cfg              # 音訊替換設定
 └── src/
-    ├── binkw32_proxy.cpp    # 主代理 + 音訊 + .mix 解析器
+    ├── binkw32_proxy.h      # 共用型別、全域變數、函式宣告
+    ├── binkw32_proxy.cpp    # DLL 載入器、視訊追蹤、代理匯出
+    ├── logging.cpp          # 日誌子系統
+    ├── config.cpp           # 設定解析、.mix 解析器、Bink 標頭讀取
+    ├── audio_decoder.cpp    # 統一 WAV + OGG 解碼器（stb_vorbis）
+    ├── stb_vorbis.c         # OGG Vorbis 解碼器（stb_vorbis v1.22，公共領域）
+    ├── wav_player.cpp       # WaveOut 音訊播放
+    ├── video_scaler.h       # 影片縮放介面
+    ├── video_scaler.cpp     # 9 種縮放演算法
     ├── exports.def          # DLL 匯出表（107 個匯出）
     └── version_info.rc      # DLL 版本資訊
 ```

@@ -3,10 +3,15 @@ project(bink32w LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-function(add_bink_proxy TARGET_NAME BINK_DEFINE)
+function(add_bink_proxy TARGET_NAME BINK_DEFINE DEF_FILE)
     add_library(${TARGET_NAME} SHARED
         src/binkw32_proxy.cpp
-        src/exports.def
+        src/logging.cpp
+        src/config.cpp
+        src/audio_decoder.cpp
+        src/wav_player.cpp
+        src/video_scaler.cpp
+        ${DEF_FILE}
         src/version_info.rc
     )
     set_target_properties(${TARGET_NAME} PROPERTIES
@@ -21,5 +26,5 @@ function(add_bink_proxy TARGET_NAME BINK_DEFINE)
     target_link_libraries(${TARGET_NAME} PRIVATE kernel32 user32)
 endfunction()
 
-add_bink_proxy(binkw32_10q BINK_10Q)
-add_bink_proxy(binkw32_19u BINK_19U)
+add_bink_proxy(binkw32_10q BINK_10Q src/exports.def)
+add_bink_proxy(binkw32_19u BINK_19U src/exports.def)

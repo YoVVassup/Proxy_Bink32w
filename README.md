@@ -49,7 +49,13 @@ If the real DLL is missing, a dialog with an error message will appear.
 
 ## Audio replacement
 
-Replace the audio track of any `.bik` video with a custom `.wav` file. The proxy automatically detects `.bik` files inside `.mix` archives using LMD (Local Mix Database) CRC32 resolution.
+Replace the audio track of any `.bik` video with a custom `.wav` or `.ogg` file. The proxy automatically detects `.bik` files inside `.mix` archives using LMD (Local Mix Database) CRC32 resolution.
+
+### Supported formats
+
+- WAV: PCM, 8/16/24 bit, any sample rate, mono/stereo
+- OGG: Vorbis, any sample rate, mono/stereo (via stb_vorbis)
+- Relative paths (from DLL directory) and absolute paths
 
 ### Configuration
 
@@ -62,11 +68,17 @@ Create `binkw32.cfg` in the DLL directory:
 
 [movies01]
 a01_f00e.bik = BinkWAV\a01_f00e.wav
-a02_f00e.bik = BinkWAV\a02_f00e.wav
+a02_f00e.bik = BinkWAV\a02_f00e.ogg
 
 [movies02]
 s01_f00e.bik = BinkWAV\s01_f00e.wav
-s02_f00e.bik = BinkWAV\s02_f00e.wav
+s02_f00e.bik = BinkWAV\s02_f00e.ogg
+
+[video]
+; Video scaling mode (default: bilinear)
+; Options: nearest, bilinear, area, sharpen-area, sharpen-bilinear,
+;          scanline, sharpen, color-dither, crt-scanline
+scale_mode=bilinear
 
 [audio]
 ; Global fallback (used when no exception match)
@@ -77,21 +89,16 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 
 The `[exception]` section has **higher priority** than `[audio]`. When a video is opened, the proxy first checks if the `.mix` archive name matches an exception entry, then looks for the `.bik` filename within that exception section. If not found, it falls back to the global `[audio]` section.
 
-Reserved section names (`[audio]`, `[exception]`, `[log]`) cannot be used as `.mix` exception section names.
+Reserved section names (`[audio]`, `[exception]`, `[log]`, `[video]`) cannot be used as `.mix` exception section names.
 
 ### How it works
 
 1. When `BinkOpen` is called, the proxy parses the `.mix` archive header and LMD
 2. The CRC32 hash is resolved to the original `.bik` filename
 3. The filename is matched against `[exception]` (by `.mix` name) first, then `[audio]`
-4. If a mapping exists, the `.wav` file is loaded and played via WaveOut
+4. If a mapping exists, the audio file (`.wav` or `.ogg`) is decoded to PCM and played via WaveOut
 5. Bink audio is automatically muted (`BinkSetVolume` → 0) for the replaced video
-6. The `.wav` playback stops when `BinkClose` is called
-
-### Supported formats
-
-- WAV files: PCM, 8/16/24 bit, any sample rate, mono/stereo
-- Relative paths (from DLL directory) and absolute paths
+6. The playback stops when `BinkClose` is called
 
 ## .mix archive parsing
 
@@ -106,23 +113,23 @@ The proxy parses RA2/YR `.mix` archive format:
 
 When `BinkCopyToBuffer` is called with a destination smaller than the video resolution, the proxy automatically scales the frame using **aspect-ratio-preserving fit scaling** (like CSS `object-fit: contain`). The video is centered within the destination buffer with black bars if needed.
 
-- Bilinear interpolation for 4 bpp (32-bit) surfaces
-- Nearest-neighbor for 2/3 bpp surfaces
+9 scaling algorithms available:
+
+| Mode | Description |
+|---|---|
+| `nearest` | Nearest-neighbor |
+| `bilinear` | Bilinear interpolation (default) |
+| `area` | Area averaging (box filter) |
+| `sharpen-area` | Area + edge-aware sharpening |
+| `sharpen-bilinear` | Pre-sharpen + bilinear |
+| `scanline` | Bilinear + alternating row darkening |
+| `sharpen` | Bilinear + unsharp mask |
+| `color-dither` | Bayer 4x4 dither |
+| `crt-scanline` | Bilinear + soft CRT scanline effect |
 
 ## Logging
 
 The log file `binkw32_proxy.log` is created in the DLL directory.
-
-### Disabling logging
-
-Two ways to disable logging without recompiling:
-
-1. **File** — create an empty `binkw32.nolog` file in the DLL directory
-2. **Environment variable** — set `BINK_PROXY_LOG=0`
-
-### Custom path
-
-The `BINK_PROXY_LOG` environment variable specifies a custom log file path.
 
 ### Log options
 
@@ -130,7 +137,8 @@ In `binkw32.cfg`:
 
 ```ini
 [log]
-wait = true    ; log BinkWait calls (default: false)
+enabled = false   ; disable all logging (default: true)
+wait = true       ; log BinkWait calls (default: false)
 ```
 
 ## Compatibility
@@ -162,7 +170,15 @@ Proxy_Bink32w/
 ├── README_zh-TW.md          # 繁體中文
 ├── binkw32.cfg              # Audio replacement config
 └── src/
-    ├── binkw32_proxy.cpp    # Main proxy + audio + mix parser
+    ├── binkw32_proxy.h      # Shared types, globals, function declarations
+    ├── binkw32_proxy.cpp    # DLL loader, video tracking, proxy exports
+    ├── logging.cpp          # Log subsystem
+    ├── config.cpp           # Config parsing, .mix parser, Bink header reader
+    ├── audio_decoder.cpp    # Unified WAV + OGG decoder (stb_vorbis)
+    ├── stb_vorbis.c         # OGG Vorbis decoder (stb_vorbis v1.22, public domain)
+    ├── wav_player.cpp       # WaveOut audio playback
+    ├── video_scaler.h       # Video scaler interface
+    ├── video_scaler.cpp     # 9 scaling algorithms
     ├── exports.def          # DLL export table (107 exports)
     └── version_info.rc      # DLL version info
 ```
