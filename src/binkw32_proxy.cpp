@@ -64,6 +64,112 @@ D(YUV_blit_YV12)
 // DLL loader — resolves real Bink DLL functions by ordinal
 // ============================================================================
 
+struct OrdinalEntry {
+    int ordinal;
+    void** dest;
+};
+
+#define OE(func, ord) { ord, &p##func }
+
+// Bink 1.0q ordinal table
+static const OrdinalEntry g_ordinals_10q[] = {
+    OE(BinkBufferBlit,1),          OE(BinkBufferCheckWinPos,2),
+    OE(BinkBufferClear,3),         OE(BinkBufferClose,4),
+    OE(BinkBufferGetDescription,5), OE(BinkBufferGetError,6),
+    OE(BinkBufferLock,7),          OE(BinkBufferOpen,8),
+    OE(BinkBufferSetDirectDraw,9), OE(BinkBufferSetHWND,10),
+    OE(BinkBufferSetOffset,11),    OE(BinkBufferSetResolution,12),
+    OE(BinkBufferSetScale,13),     OE(BinkBufferUnlock,14),
+    OE(BinkCheckCursor,15),        OE(BinkClose,16),
+    OE(BinkCloseTrack,17),         OE(BinkCopyToBuffer,18),
+    OE(BinkDDSurfaceType,19),      OE(BinkDoFrame,20),
+    OE(BinkGetError,21),           OE(BinkGetKeyFrame,22),
+    OE(BinkGetRealtime,23),        OE(BinkGetRects,24),
+    OE(BinkGetSummary,25),         OE(BinkGetTrackData,26),
+    OE(BinkGetTrackID,27),         OE(BinkGetTrackMaxSize,28),
+    OE(BinkGetTrackType,29),       OE(BinkGoto,30),
+    OE(BinkIsSoftwareCursor,31),   OE(BinkLogoAddress,32),
+    OE(BinkNextFrame,33),          OE(BinkOpen,34),
+    OE(BinkOpenDirectSound,35),    OE(BinkOpenMiles,36),
+    OE(BinkOpenTrack,37),          OE(BinkOpenWaveOut,38),
+    OE(BinkPause,39),              OE(BinkRestoreCursor,40),
+    OE(BinkService,41),            OE(BinkSetError,42),
+    OE(BinkSetFrameRate,43),       OE(BinkSetIO,44),
+    OE(BinkSetIOSize,45),          OE(BinkSetPan,46),
+    OE(BinkSetSimulate,47),        OE(BinkSetSoundOnOff,48),
+    OE(BinkSetSoundSystem,49),     OE(BinkSetSoundTrack8,50),
+    OE(BinkSetVideoOnOff,51),      OE(BinkSetVolume,52),
+    OE(BinkWait,53),
+    OE(ExpandBink,54),             OE(ExpandBundleSizes,55),
+    OE(RADSetMemory,56),           OE(RADTimerRead,57),
+    OE(YUV_blit_16a1bpp,58),       OE(YUV_blit_16a1bpp_mask,59),
+    OE(YUV_blit_16a4bpp,60),       OE(YUV_blit_16a4bpp_mask,61),
+    OE(YUV_blit_16bpp,62),         OE(YUV_blit_16bpp_mask,63),
+    OE(YUV_blit_24bpp,64),         OE(YUV_blit_24bpp_mask,65),
+    OE(YUV_blit_24rbpp,66),        OE(YUV_blit_24rbpp_mask,67),
+    OE(YUV_blit_32abpp,68),        OE(YUV_blit_32abpp_mask,69),
+    OE(YUV_blit_32bpp,70),         OE(YUV_blit_32bpp_mask,71),
+    OE(YUV_blit_32rabpp,72),       OE(YUV_blit_32rabpp_mask,73),
+    OE(YUV_blit_32rbpp,74),        OE(YUV_blit_32rbpp_mask,75),
+    OE(YUV_blit_UYVY,76),          OE(YUV_blit_UYVY_mask,77),
+    OE(YUV_blit_YUY2,78),          OE(YUV_blit_YUY2_mask,79),
+    OE(YUV_blit_YV12,80),          OE(YUV_init,81),
+    OE(radfree,82),                OE(radmalloc,83),
+};
+
+// Bink 1.9u ordinal table
+static const OrdinalEntry g_ordinals_19u[] = {
+    OE(BinkBufferBlit,1),          OE(BinkBufferCheckWinPos,2),
+    OE(BinkBufferClear,3),         OE(BinkBufferClose,4),
+    OE(BinkBufferGetDescription,5), OE(BinkBufferGetError,6),
+    OE(BinkBufferLock,7),          OE(BinkBufferOpen,8),
+    OE(BinkBufferSetDirectDraw,9), OE(BinkBufferSetHWND,10),
+    OE(BinkBufferSetOffset,11),    OE(BinkBufferSetResolution,12),
+    OE(BinkBufferSetScale,13),     OE(BinkBufferUnlock,14),
+    OE(BinkCheckCursor,15),        OE(BinkClose,16),
+    OE(BinkCloseTrack,17),         OE(BinkControlBackgroundIO,18),
+    OE(BinkControlPlatformFeatures,19), OE(BinkCopyToBuffer,20),
+    OE(BinkCopyToBufferRect,21),   OE(BinkDDSurfaceType,22),
+    OE(BinkDX8SurfaceType,23),     OE(BinkDX9SurfaceType,24),
+    OE(BinkDoFrame,25),            OE(BinkDoFrameAsync,26),
+    OE(BinkDoFrameAsyncWait,27),   OE(BinkDoFramePlane,28),
+    OE(BinkGetError,29),           OE(BinkGetFrameBuffersInfo,30),
+    OE(BinkGetKeyFrame,31),        OE(BinkGetPalette,32),
+    OE(BinkGetRealtime,33),        OE(BinkGetRects,34),
+    OE(BinkGetSummary,35),         OE(BinkGetTrackData,36),
+    OE(BinkGetTrackID,37),         OE(BinkGetTrackMaxSize,38),
+    OE(BinkGetTrackType,39),       OE(BinkGoto,40),
+    OE(BinkIsSoftwareCursor,41),   OE(BinkLogoAddress,42),
+    OE(BinkNextFrame,43),          OE(BinkOpen,44),
+    OE(BinkOpenDirectSound,45),    OE(BinkOpenMiles,46),
+    OE(BinkOpenTrack,47),          OE(BinkOpenWaveOut,48),
+    OE(BinkPause,49),              OE(BinkRegisterFrameBuffers,50),
+    OE(BinkRequestStopAsyncThread,51), OE(BinkRestoreCursor,52),
+    OE(BinkService,53),            OE(BinkSetError,54),
+    OE(BinkSetFrameRate,55),       OE(BinkSetIO,56),
+    OE(BinkSetIOSize,57),          OE(BinkSetMemory,58),
+    OE(BinkSetMixBinVolumes,59),   OE(BinkSetMixBins,60),
+    OE(BinkSetPan,61),             OE(BinkSetSimulate,62),
+    OE(BinkSetSoundOnOff,63),      OE(BinkSetSoundSystem,64),
+    OE(BinkSetSoundTrack8,65),     OE(BinkSetVideoOnOff,66),
+    OE(BinkSetVolume,67),          OE(BinkSetWillLoop,68),
+    OE(BinkShouldSkip,69),         OE(BinkStartAsyncThread,70),
+    OE(BinkWait,71),               OE(BinkWaitStopAsyncThread,72),
+    OE(RADTimerRead,73),
+};
+
+#undef OE
+
+#ifdef BINK_10Q
+#define BINK_REAL_DLL "binkw32_1.0q.dll"
+#define BINK_ORDINAL_TABLE g_ordinals_10q
+#define BINK_ORDINAL_COUNT (sizeof(g_ordinals_10q)/sizeof(g_ordinals_10q[0]))
+#else
+#define BINK_REAL_DLL "binkw32_1.9u.dll"
+#define BINK_ORDINAL_TABLE g_ordinals_19u
+#define BINK_ORDINAL_COUNT (sizeof(g_ordinals_19u)/sizeof(g_ordinals_19u[0]))
+#endif
+
 static BOOL LoadDll() {
     if (g_hR) return TRUE;
 
@@ -74,11 +180,7 @@ static BOOL LoadDll() {
     *(slash + 1) = 0;
 
     char dllPath[MAX_PATH];
-#ifdef BINK_10Q
-    _snprintf_s(dllPath, sizeof(dllPath), _TRUNCATE, "%sbinkw32_1.0q.dll", exePath);
-#else
-    _snprintf_s(dllPath, sizeof(dllPath), _TRUNCATE, "%sbinkw32_1.9u.dll", exePath);
-#endif
+    _snprintf_s(dllPath, sizeof(dllPath), _TRUNCATE, "%s" BINK_REAL_DLL, exePath);
 
     g_hR = LoadLibraryA(dllPath);
     if (!g_hR) {
@@ -90,92 +192,10 @@ static BOOL LoadDll() {
     }
     LogF("Real DLL loaded: %s", dllPath);
 
-#define L(n, o) p##n = (void*)GetProcAddress(g_hR, (LPCSTR)o)
+    for (int i = 0; i < (int)BINK_ORDINAL_COUNT; i++) {
+        *BINK_ORDINAL_TABLE[i].dest = (void*)GetProcAddress(g_hR, (LPCSTR)BINK_ORDINAL_TABLE[i].ordinal);
+    }
 
-#ifdef BINK_10Q
-    L(BinkBufferBlit,1);          L(BinkBufferCheckWinPos,2);
-    L(BinkBufferClear,3);         L(BinkBufferClose,4);
-    L(BinkBufferGetDescription,5); L(BinkBufferGetError,6);
-    L(BinkBufferLock,7);          L(BinkBufferOpen,8);
-    L(BinkBufferSetDirectDraw,9); L(BinkBufferSetHWND,10);
-    L(BinkBufferSetOffset,11);    L(BinkBufferSetResolution,12);
-    L(BinkBufferSetScale,13);     L(BinkBufferUnlock,14);
-    L(BinkCheckCursor,15);        L(BinkClose,16);
-    L(BinkCloseTrack,17);         L(BinkCopyToBuffer,18);
-    L(BinkDDSurfaceType,19);      L(BinkDoFrame,20);
-    L(BinkGetError,21);           L(BinkGetKeyFrame,22);
-    L(BinkGetRealtime,23);        L(BinkGetRects,24);
-    L(BinkGetSummary,25);         L(BinkGetTrackData,26);
-    L(BinkGetTrackID,27);         L(BinkGetTrackMaxSize,28);
-    L(BinkGetTrackType,29);       L(BinkGoto,30);
-    L(BinkIsSoftwareCursor,31);   L(BinkLogoAddress,32);
-    L(BinkNextFrame,33);          L(BinkOpen,34);
-    L(BinkOpenDirectSound,35);    L(BinkOpenMiles,36);
-    L(BinkOpenTrack,37);          L(BinkOpenWaveOut,38);
-    L(BinkPause,39);              L(BinkRestoreCursor,40);
-    L(BinkService,41);            L(BinkSetError,42);
-    L(BinkSetFrameRate,43);       L(BinkSetIO,44);
-    L(BinkSetIOSize,45);          L(BinkSetPan,46);
-    L(BinkSetSimulate,47);        L(BinkSetSoundOnOff,48);
-    L(BinkSetSoundSystem,49);     L(BinkSetSoundTrack8,50);
-    L(BinkSetVideoOnOff,51);      L(BinkSetVolume,52);
-    L(BinkWait,53);
-    L(ExpandBink,54);             L(ExpandBundleSizes,55);
-    L(RADSetMemory,56);           L(RADTimerRead,57);
-    L(YUV_blit_16a1bpp,58);       L(YUV_blit_16a1bpp_mask,59);
-    L(YUV_blit_16a4bpp,60);       L(YUV_blit_16a4bpp_mask,61);
-    L(YUV_blit_16bpp,62);         L(YUV_blit_16bpp_mask,63);
-    L(YUV_blit_24bpp,64);         L(YUV_blit_24bpp_mask,65);
-    L(YUV_blit_24rbpp,66);        L(YUV_blit_24rbpp_mask,67);
-    L(YUV_blit_32abpp,68);        L(YUV_blit_32abpp_mask,69);
-    L(YUV_blit_32bpp,70);         L(YUV_blit_32bpp_mask,71);
-    L(YUV_blit_32rabpp,72);       L(YUV_blit_32rabpp_mask,73);
-    L(YUV_blit_32rbpp,74);        L(YUV_blit_32rbpp_mask,75);
-    L(YUV_blit_UYVY,76);          L(YUV_blit_UYVY_mask,77);
-    L(YUV_blit_YUY2,78);          L(YUV_blit_YUY2_mask,79);
-    L(YUV_blit_YV12,80);          L(YUV_init,81);
-    L(radfree,82);                L(radmalloc,83);
-#else
-    L(BinkBufferBlit,1);          L(BinkBufferCheckWinPos,2);
-    L(BinkBufferClear,3);         L(BinkBufferClose,4);
-    L(BinkBufferGetDescription,5); L(BinkBufferGetError,6);
-    L(BinkBufferLock,7);          L(BinkBufferOpen,8);
-    L(BinkBufferSetDirectDraw,9); L(BinkBufferSetHWND,10);
-    L(BinkBufferSetOffset,11);    L(BinkBufferSetResolution,12);
-    L(BinkBufferSetScale,13);     L(BinkBufferUnlock,14);
-    L(BinkCheckCursor,15);        L(BinkClose,16);
-    L(BinkCloseTrack,17);         L(BinkControlBackgroundIO,18);
-    L(BinkControlPlatformFeatures,19); L(BinkCopyToBuffer,20);
-    L(BinkCopyToBufferRect,21);   L(BinkDDSurfaceType,22);
-    L(BinkDX8SurfaceType,23);     L(BinkDX9SurfaceType,24);
-    L(BinkDoFrame,25);            L(BinkDoFrameAsync,26);
-    L(BinkDoFrameAsyncWait,27);   L(BinkDoFramePlane,28);
-    L(BinkGetError,29);           L(BinkGetFrameBuffersInfo,30);
-    L(BinkGetKeyFrame,31);        L(BinkGetPalette,32);
-    L(BinkGetRealtime,33);        L(BinkGetRects,34);
-    L(BinkGetSummary,35);         L(BinkGetTrackData,36);
-    L(BinkGetTrackID,37);         L(BinkGetTrackMaxSize,38);
-    L(BinkGetTrackType,39);       L(BinkGoto,40);
-    L(BinkIsSoftwareCursor,41);   L(BinkLogoAddress,42);
-    L(BinkNextFrame,43);          L(BinkOpen,44);
-    L(BinkOpenDirectSound,45);    L(BinkOpenMiles,46);
-    L(BinkOpenTrack,47);          L(BinkOpenWaveOut,48);
-    L(BinkPause,49);              L(BinkRegisterFrameBuffers,50);
-    L(BinkRequestStopAsyncThread,51); L(BinkRestoreCursor,52);
-    L(BinkService,53);            L(BinkSetError,54);
-    L(BinkSetFrameRate,55);       L(BinkSetIO,56);
-    L(BinkSetIOSize,57);          L(BinkSetMemory,58);
-    L(BinkSetMixBinVolumes,59);   L(BinkSetMixBins,60);
-    L(BinkSetPan,61);             L(BinkSetSimulate,62);
-    L(BinkSetSoundOnOff,63);      L(BinkSetSoundSystem,64);
-    L(BinkSetSoundTrack8,65);     L(BinkSetVideoOnOff,66);
-    L(BinkSetVolume,67);          L(BinkSetWillLoop,68);
-    L(BinkShouldSkip,69);         L(BinkStartAsyncThread,70);
-    L(BinkWait,71);               L(BinkWaitStopAsyncThread,72);
-    L(RADTimerRead,73);
-#endif
-
-#undef L
     LogF("Proxied functions resolved: pBinkOpen=%p pBinkDoFrame=%p pBinkClose=%p pBinkWait=%p",
          pBinkOpen, pBinkDoFrame, pBinkClose, pBinkWait);
     return TRUE;

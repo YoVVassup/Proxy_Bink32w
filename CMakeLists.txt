@@ -3,6 +3,8 @@ project(bink32w LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(BINK_VERSIONS "10q;19u" CACHE STRING "Semicolon-separated list of Bink versions to build (e.g. \"10q;19u;27g\")")
+
 function(add_bink_proxy TARGET_NAME BINK_DEFINE DEF_FILE)
     add_library(${TARGET_NAME} SHARED
         src/binkw32_proxy.cpp
@@ -26,5 +28,7 @@ function(add_bink_proxy TARGET_NAME BINK_DEFINE DEF_FILE)
     target_link_libraries(${TARGET_NAME} PRIVATE kernel32 user32)
 endfunction()
 
-add_bink_proxy(binkw32_10q BINK_10Q src/exports.def)
-add_bink_proxy(binkw32_19u BINK_19U src/exports.def)
+foreach(VER ${BINK_VERSIONS})
+    string(TOUPPER ${VER} VER_UPPER)
+    add_bink_proxy(binkw32_${VER} "BINK_${VER_UPPER}" src/exports.def)
+endforeach()
