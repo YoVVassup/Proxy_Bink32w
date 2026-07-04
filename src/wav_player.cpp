@@ -2,7 +2,23 @@
 #include "audio_decoder.h"
 #include <mmsystem.h>
 
-#pragma comment(lib, "winmm.lib")
+// ============================================================================
+// wav_player.cpp — WaveOut audio player with 4-buffer streaming
+//
+// Provides thread-safe audio playback for .wav and .ogg replacement files.
+// Uses Windows WaveOut API with callback-based buffer refilling.
+//
+// Lifecycle:
+//   AllocPlayer() -> WavPlayerStart() -> [Pause/Resume/Seek] -> WavPlayerStop() -> FreePlayer()
+//
+// Thread safety:
+//   - CRITICAL_SECTION protects shared state between main thread and WaveOut callback
+//   - playing/paused flags are volatile for lock-free reads in callback
+//
+// Buffer management:
+//   4 buffers, each ~0.5 seconds of audio (nAvgBytesPerSec / 2)
+//   Callback refills buffers from PCM stream on WOM_DONE events
+// ============================================================================
 
 // ============================================================================
 // Audio player (WaveOut, 4-buffer callback-based)
@@ -13,34 +29,59 @@ WavPlayer g_players[MAX_WAV_PLAYERS];
 int g_playerCount = 0;
 
 WavPlayer* AllocPlayer() {
+    for (int i = 0; i < g_playerCount; i++) {
+        if (g_players[i].hWave == NULL && !g_players[i].csValid) {
+            memset(&g_players[i], 0, sizeof(WavPlayer));
+            InitializeCriticalSection(&g_players[i].cs);
+            g_players[i].csValid = TRUE;
+            return &g_players[i];
+        }
+    }
     if (g_playerCount < MAX_WAV_PLAYERS) {
         WavPlayer* pl = &g_players[g_playerCount++];
         memset(pl, 0, sizeof(WavPlayer));
-        pl->hWave = NULL;
         InitializeCriticalSection(&pl->cs);
+        pl->csValid = TRUE;
         return pl;
     }
     return NULL;
 }
 
+// FreePlayer — Must NOT be called from the WaveOut callback thread.
+// waveOutReset can trigger WOM_DONE callbacks; calling it from within
+// a callback causes deadlock (the callback thread cannot re-enter).
 void FreePlayer(WavPlayer* pl) {
     if (!pl) return;
+    if (!pl->csValid) return;
     if (pl->hWave) {
         EnterCriticalSection(&pl->cs);
         pl->playing = FALSE;
         pl->paused = FALSE;
         LeaveCriticalSection(&pl->cs);
         waveOutReset(pl->hWave);
-        for (int i = 0; i < 4; i++) {
+        EnterCriticalSection(&pl->cs);
+        LeaveCriticalSection(&pl->cs);
+        for (int i = 0; i < pl->preparedCount; i++) {
             if (pl->headers[i].lpData) {
                 waveOutUnprepareHeader(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
+            }
+        }
+        for (int i = 0; i < 4; i++) {
+            if (pl->buffers[i]) {
                 VirtualFree(pl->buffers[i], 0, MEM_RELEASE);
+                pl->buffers[i] = NULL;
+                memset(&pl->headers[i], 0, sizeof(WAVEHDR));
             }
         }
         waveOutClose(pl->hWave);
+        pl->hWave = NULL;
     }
-    if (pl->pcmData) VirtualFree(pl->pcmData, 0, MEM_RELEASE);
+    if (pl->pcmData) {
+        VirtualFree(pl->pcmData, 0, MEM_RELEASE);
+        pl->pcmData = NULL;
+    }
     DeleteCriticalSection(&pl->cs);
+    pl->csValid = FALSE;
     memset(pl, 0, sizeof(WavPlayer));
 }
 
@@ -71,10 +112,8 @@ static void CALLBACK WaveOutProc(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance,
     }
 }
 
-void WavPlayerStop(WavPlayer* pl);
-
 BOOL WavPlayerStart(WavPlayer* pl, const char* audioPath) {
-    if (!pl || !audioPath) return FALSE;
+    if (!pl || !audioPath || !audioPath[0]) return FALSE;
 
     char fullPath[MAX_PATH];
     if (audioPath[1] == ':' || (audioPath[0] == '\\' && audioPath[1] == '\\')) {
@@ -93,9 +132,8 @@ BOOL WavPlayerStart(WavPlayer* pl, const char* audioPath) {
     pl->pcmData = decoded.pcmData;
     pl->pcmSize = decoded.pcmSize;
     pl->pcmPos = 0;
-    pl->playing = TRUE;
+    pl->playing = FALSE;
     pl->paused = FALSE;
-    pl->bufIndex = 0;
 
     MMRESULT res = waveOutOpen(&pl->hWave, WAVE_MAPPER, &pl->format, (DWORD_PTR)WaveOutProc,
                                (DWORD_PTR)pl, CALLBACK_FUNCTION);
@@ -109,6 +147,7 @@ BOOL WavPlayerStart(WavPlayer* pl, const char* audioPath) {
     pl->bufSize = pl->format.nAvgBytesPerSec / 2;
     if (pl->bufSize < 4096) pl->bufSize = 4096;
 
+    pl->preparedCount = 0;
     for (int i = 0; i < 4; i++) {
         pl->buffers[i] = (char*)VirtualAlloc(NULL, pl->bufSize, MEM_COMMIT, PAGE_READWRITE);
         if (!pl->buffers[i]) {
@@ -119,18 +158,30 @@ BOOL WavPlayerStart(WavPlayer* pl, const char* audioPath) {
         memset(&pl->headers[i], 0, sizeof(WAVEHDR));
         pl->headers[i].lpData = pl->buffers[i];
         pl->headers[i].dwBufferLength = pl->bufSize;
-        waveOutPrepareHeader(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
+        MMRESULT prepRes = waveOutPrepareHeader(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
+        if (prepRes != MMSYSERR_NOERROR) {
+            LogF("waveOutPrepareHeader failed for buffer %d: %u", i, prepRes);
+            pl->headers[i].lpData = NULL;
+            WavPlayerStop(pl);
+            return FALSE;
+        }
+        pl->preparedCount++;
     }
 
+    EnterCriticalSection(&pl->cs);
     for (int i = 0; i < 4; i++) {
         DWORD remaining = pl->pcmSize - pl->pcmPos;
         if (remaining == 0) break;
         DWORD toWrite = remaining < (DWORD)pl->bufSize ? remaining : (DWORD)pl->bufSize;
         memcpy(pl->buffers[i], pl->pcmData + pl->pcmPos, toWrite);
+        if (toWrite < (DWORD)pl->bufSize)
+            memset(pl->buffers[i] + toWrite, 0, (DWORD)pl->bufSize - toWrite);
         pl->headers[i].dwBufferLength = pl->bufSize;
         pl->pcmPos += toWrite;
         waveOutWrite(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
     }
+    pl->playing = TRUE;
+    LeaveCriticalSection(&pl->cs);
 
     LogF("Audio playback started: %s (%u Hz, %u bit, %u ch)",
          fullPath, pl->format.nSamplesPerSec, pl->format.wBitsPerSample, pl->format.nChannels);
@@ -144,7 +195,9 @@ void WavPlayerStop(WavPlayer* pl) {
     pl->paused = FALSE;
     LeaveCriticalSection(&pl->cs);
     waveOutReset(pl->hWave);
-    for (int i = 0; i < 4; i++) {
+    EnterCriticalSection(&pl->cs);
+    LeaveCriticalSection(&pl->cs);
+    for (int i = 0; i < pl->preparedCount; i++) {
         if (pl->headers[i].lpData) {
             waveOutUnprepareHeader(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
             VirtualFree(pl->buffers[i], 0, MEM_RELEASE);
@@ -152,9 +205,19 @@ void WavPlayerStop(WavPlayer* pl) {
             memset(&pl->headers[i], 0, sizeof(WAVEHDR));
         }
     }
+    for (int i = pl->preparedCount; i < 4; i++) {
+        if (pl->buffers[i]) {
+            VirtualFree(pl->buffers[i], 0, MEM_RELEASE);
+            pl->buffers[i] = NULL;
+        }
+    }
+    pl->preparedCount = 0;
     waveOutClose(pl->hWave);
     pl->hWave = NULL;
-    if (pl->pcmData) { VirtualFree(pl->pcmData, 0, MEM_RELEASE); pl->pcmData = NULL; }
+    if (pl->pcmData) {
+        VirtualFree(pl->pcmData, 0, MEM_RELEASE);
+        pl->pcmData = NULL;
+    }
     LogF("Audio playback stopped");
 }
 
@@ -180,19 +243,25 @@ void WavPlayerResume(WavPlayer* pl) {
 
 void WavPlayerSeek(WavPlayer* pl, DWORD sampleOffset) {
     if (!pl || !pl->hWave) return;
-    DWORD byteOffset = sampleOffset * pl->format.nBlockAlign;
-    if (byteOffset >= pl->pcmSize) byteOffset = pl->pcmSize;
+    uint64_t byteOffset64 = (uint64_t)sampleOffset * pl->format.nBlockAlign;
+    if (byteOffset64 >= pl->pcmSize) byteOffset64 = pl->pcmSize;
     EnterCriticalSection(&pl->cs);
-    pl->pcmPos = byteOffset;
+    pl->pcmPos = (DWORD)byteOffset64;
+    pl->playing = FALSE;
     LeaveCriticalSection(&pl->cs);
     waveOutReset(pl->hWave);
-    for (int i = 0; i < 4; i++) {
+    EnterCriticalSection(&pl->cs);
+    for (int i = 0; i < pl->preparedCount; i++) {
         DWORD remaining = pl->pcmSize - pl->pcmPos;
         if (remaining == 0) break;
         DWORD toWrite = remaining < (DWORD)pl->bufSize ? remaining : (DWORD)pl->bufSize;
         memcpy(pl->buffers[i], pl->pcmData + pl->pcmPos, toWrite);
+        if (toWrite < (DWORD)pl->bufSize)
+            memset(pl->buffers[i] + toWrite, 0, (DWORD)pl->bufSize - toWrite);
         pl->headers[i].dwBufferLength = pl->bufSize;
         pl->pcmPos += toWrite;
         waveOutWrite(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
     }
+    pl->playing = TRUE;
+    LeaveCriticalSection(&pl->cs);
 }

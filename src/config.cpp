@@ -1,4 +1,27 @@
 #include "binkw32_proxy.h"
+#include <stdlib.h>
+
+// ============================================================================
+// config.cpp — Configuration parsing, .mix archive parser, Bink header reader
+//
+// This module handles:
+// 1. Config parsing (binkw32.cfg) — single-pass, in-memory
+//    - [log]      : enabled, wait
+//    - [exception]: per-mix audio replacement rules
+//    - [audio]    : global audio fallback
+//    - [mixname]  : per-mix .bik -> .wav/.ogg mappings
+//
+// 2. Bink header reader — reads video dimensions from .bik file headers
+//
+// 3. .mix archive parser — parses RA2/YR .mix format:
+//    - Hash table at offset 0xA (12 bytes/entry: CRC32 + offset + size)
+//    - LMD file (CRC32 0x366E051F) for CRC32 -> filename mapping
+//    - CRC32 computed with RA2 convention: uppercase + 4-byte padding
+//    - Results cached in g_mixCache[8] to avoid re-parsing
+//
+// 4. FindBikNameInMix — resolves .bik filename from .mix by file position
+// 5. FindWavForBik — looks up .wav/.ogg replacement for a .bik file
+// ============================================================================
 
 // ============================================================================
 // Audio replacement configuration
@@ -8,13 +31,19 @@ AudioMap g_audioMaps[64];
 int g_audioMapCount = 0;
 ExceptionEntry g_exceptions[32];
 int g_exceptionCount = 0;
-BOOL g_audioConfigLoaded = FALSE;
+static LONG g_audioConfigLoaded = FALSE;
 BOOL g_logWait = FALSE;
-ScaleMode g_scaleMode = SCALE_BILINEAR;
+
+void ResetAudioConfig() {
+    InterlockedExchange(&g_audioConfigLoaded, FALSE);
+    g_audioMapCount = 0;
+    g_exceptionCount = 0;
+    g_logEnabled = TRUE;
+    g_logWait = FALSE;
+}
 
 void LoadAudioConfig() {
-    if (g_audioConfigLoaded) return;
-    g_audioConfigLoaded = TRUE;
+    if (InterlockedCompareExchange(&g_audioConfigLoaded, TRUE, FALSE) != FALSE) return;
 
     char cfgPath[MAX_PATH];
     _snprintf_s(cfgPath, sizeof(cfgPath), _TRUNCATE, "%sbinkw32.cfg", g_dllDir);
@@ -23,42 +52,40 @@ void LoadAudioConfig() {
     fopen_s(&f, cfgPath, "r");
     if (!f) return;
 
-    {
-        char preLine[1024];
-        BOOL inLogSection = FALSE;
-        while (fgets(preLine, sizeof(preLine), f)) {
-            TrimRight(preLine);
-            if (preLine[0] == '[') {
-                char* close = strchr(preLine, ']');
-                if (close) *close = '\0';
-                inLogSection = (_stricmp(preLine + 1, "log") == 0);
-                continue;
-            }
-            if (inLogSection && preLine[0]) {
-                char* eq = strchr(preLine, '=');
-                if (eq) {
-                    *eq = '\0';
-                    char* k = preLine;
-                    char* v = eq + 1;
-                    TrimRight(k);
-                    while (*v == ' ' || *v == '\t') v++;
-                    TrimRight(v);
-                    if (_stricmp(k, "enabled") == 0 && (_stricmp(v, "false") == 0 || _stricmp(v, "0") == 0)) {
-                        g_logEnabled = FALSE;
-                    }
-                }
-            }
-        }
-        rewind(f);
-    }
+    // Read entire file into memory for single-pass parsing
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fileSize <= 0) { fclose(f); return; }
+    char* fileBuf = (char*)malloc(fileSize + 1);
+    if (!fileBuf) { fclose(f); return; }
+    size_t bytesRead = fread(fileBuf, 1, fileSize, f);
+    fileBuf[bytesRead] = '\0';
+    fclose(f);
 
+    // Single-pass parse
     BOOL inAudioSection = FALSE;
     BOOL inExceptionSection = FALSE;
     BOOL inExceptionMix = FALSE;
+    BOOL inLogSection = FALSE;
     int currentExceptionIdx = -1;
     char sectionName[64] = "";
     char line[1024];
-    while (fgets(line, sizeof(line), f)) {
+
+    char* pos = fileBuf;
+    if (bytesRead >= 3 &&
+        (unsigned char)pos[0] == 0xEF && (unsigned char)pos[1] == 0xBB && (unsigned char)pos[2] == 0xBF)
+        pos += 3;
+    while (*pos) {
+        // Find end of line (handle both \n and \r\n)
+        char* eol = pos;
+        while (*eol && *eol != '\n') eol++;
+        int lineLen = (int)(eol - pos);
+        if (lineLen >= (int)sizeof(line)) lineLen = sizeof(line) - 1;
+        memcpy(line, pos, lineLen);
+        line[lineLen] = '\0';
+        pos = *eol ? eol + 1 : eol;
+
         TrimRight(line);
         if (line[0] == ';' || line[0] == '#') continue;
         if (line[0] == '[') {
@@ -67,24 +94,19 @@ void LoadAudioConfig() {
             strncpy_s(sectionName, sizeof(sectionName), line + 1, _TRUNCATE);
             inAudioSection = (_stricmp(sectionName, "audio") == 0);
             inExceptionSection = (_stricmp(sectionName, "exception") == 0);
+            inLogSection = (_stricmp(sectionName, "log") == 0);
             inExceptionMix = FALSE;
             currentExceptionIdx = -1;
 
-            if (!inAudioSection && !inExceptionSection && sectionName[0]) {
-                BOOL reserved = (_stricmp(sectionName, "audio") == 0 ||
-                                 _stricmp(sectionName, "exception") == 0 ||
-                                 _stricmp(sectionName, "log") == 0 ||
-                                 _stricmp(sectionName, "video") == 0);
-                if (!reserved) {
-                    char sectionWithMix[MAX_PATH];
-                    _snprintf_s(sectionWithMix, sizeof(sectionWithMix), _TRUNCATE, "%s.mix", sectionName);
-                    for (int i = 0; i < g_exceptionCount; i++) {
-                        if (_stricmp(g_exceptions[i].mixName, sectionName) == 0 ||
-                            _stricmp(g_exceptions[i].mixName, sectionWithMix) == 0) {
-                            inExceptionMix = TRUE;
-                            currentExceptionIdx = i;
-                            break;
-                        }
+            if (!inAudioSection && !inExceptionSection && !inLogSection && sectionName[0]) {
+                char sectionWithMix[MAX_PATH];
+                _snprintf_s(sectionWithMix, sizeof(sectionWithMix), _TRUNCATE, "%s.mix", sectionName);
+                for (int i = 0; i < g_exceptionCount; i++) {
+                    if (_stricmp(g_exceptions[i].mixName, sectionName) == 0 ||
+                        _stricmp(g_exceptions[i].mixName, sectionWithMix) == 0) {
+                        inExceptionMix = TRUE;
+                        currentExceptionIdx = i;
+                        break;
                     }
                 }
             }
@@ -99,13 +121,12 @@ void LoadAudioConfig() {
         while (*v == ' ' || *v == '\t') v++;
         TrimRight(v);
 
-        if (_stricmp(sectionName, "log") == 0) {
-            if (_stricmp(k, "wait") == 0) g_logWait = (_stricmp(v, "true") == 0 || _stricmp(v, "1") == 0);
-        }
-        if (_stricmp(sectionName, "video") == 0) {
-            if (_stricmp(k, "scale_mode") == 0) {
-                g_scaleMode = ScaleModeFromName(v);
-                LogF("  Video scale_mode: %s", ScaleModeName(g_scaleMode));
+        if (inLogSection) {
+            if (_stricmp(k, "enabled") == 0 && (_stricmp(v, "false") == 0 || _stricmp(v, "0") == 0)) {
+                g_logEnabled = FALSE;
+            }
+            if (_stricmp(k, "wait") == 0) {
+                g_logWait = (_stricmp(v, "true") == 0 || _stricmp(v, "1") == 0);
             }
         }
 
@@ -116,6 +137,8 @@ void LoadAudioConfig() {
             g_exceptions[g_exceptionCount].mapCount = 0;
             LogF("  Exception: %s", v);
             g_exceptionCount++;
+        } else if (inExceptionSection && g_exceptionCount >= 32) {
+            LogF("WARNING: Exception section limit reached (32), skipping: %s", v);
         }
 
         if (inExceptionMix && currentExceptionIdx >= 0) {
@@ -126,6 +149,8 @@ void LoadAudioConfig() {
                 strncpy_s(ex->maps[ex->mapCount].wavPath, sizeof(ex->maps[ex->mapCount].wavPath), v, _TRUNCATE);
                 LogF("  Exception map [%s]: %s -> %s", ex->mixName, k, v);
                 ex->mapCount++;
+            } else {
+                LogF("WARNING: Exception map limit reached (64) for [%s], skipping: %s", ex->mixName, k);
             }
         }
 
@@ -135,11 +160,13 @@ void LoadAudioConfig() {
             strncpy_s(g_audioMaps[g_audioMapCount].wavPath, sizeof(g_audioMaps[g_audioMapCount].wavPath), v, _TRUNCATE);
             LogF("  Audio map: %s -> %s", k, v);
             g_audioMapCount++;
+        } else if (inAudioSection && g_audioMapCount >= 64) {
+            LogF("WARNING: Audio map limit reached (64), skipping: %s", k);
         }
     }
-    fclose(f);
-    LogF("Config loaded: %d audio maps, %d exceptions, log_wait=%d, scale=%s from %s",
-         g_audioMapCount, g_exceptionCount, g_logWait, ScaleModeName(g_scaleMode), cfgPath);
+    free(fileBuf);
+    LogF("Config loaded: %d audio maps, %d exceptions, log_wait=%d from %s",
+         g_audioMapCount, g_exceptionCount, g_logWait, cfgPath);
 }
 
 // ============================================================================
@@ -152,13 +179,15 @@ BinkFileInfo ReadBinkHeaderFromFile(HANDLE hFile) {
     char hdr[44];
     DWORD read;
     if (!ReadFile(hFile, hdr, sizeof(hdr), &read, NULL) || read < sizeof(hdr)) {
+        SetFilePointer(hFile, origPos, NULL, FILE_BEGIN);
         return info;
     }
     SetFilePointer(hFile, origPos, NULL, FILE_BEGIN);
 
-    uint32_t marker = ReadU32(hdr);
-    if (marker != 0x42494B66 && marker != 0x42494B67 &&
-        marker != 0x42494B68 && marker != 0x42494B69) {
+    // Bink markers: 'BIKf' (0x42,0x49,0x4B,0x66), 'BIKg' (..0x67), 'BIKh' (..0x68), 'BIKi' (..0x69)
+    // Compare bytes directly — multi-char literals are unreliable across compilers
+    if (!((hdr[0] == 0x42 && hdr[1] == 0x49 && hdr[2] == 0x4B) &&
+          (hdr[3] == 0x66 || hdr[3] == 0x67 || hdr[3] == 0x68 || hdr[3] == 0x69))) {
         return info;
     }
     info.width = ReadU32(hdr + 20);
@@ -227,7 +256,10 @@ MixArchive* ParseMixFile(const char* mixPath) {
         if (_stricmp(g_mixCache[i].filePath, mixPath) == 0)
             return &g_mixCache[i];
     }
-    if (g_mixCacheCount >= 8) return NULL;
+    if (g_mixCacheCount >= 8) {
+        LogF("WARNING: MixArchive cache full (%d entries), cannot parse: %s", g_mixCacheCount, mixPath);
+        return NULL;
+    }
 
     LogF("ParseMixFile: opening %s", mixPath);
 
@@ -240,7 +272,7 @@ MixArchive* ParseMixFile(const char* mixPath) {
 
     DWORD fileSize = GetFileSize(hFile, NULL);
     LogF("ParseMixFile: file size=%u", fileSize);
-    if (fileSize < 14) { CloseHandle(hFile); return NULL; }
+    if (fileSize == INVALID_FILE_SIZE || fileSize < 14) { CloseHandle(hFile); return NULL; }
 
     uint8_t hdr[14];
     DWORD read;
@@ -273,12 +305,12 @@ MixArchive* ParseMixFile(const char* mixPath) {
     strncpy_s(mix->filePath, sizeof(mix->filePath), mixPath, _TRUNCATE);
     mix->fileCount = fileCount;
 
-    uint8_t* hashTable = (uint8_t*)VirtualAlloc(NULL, hashTableSize, MEM_COMMIT, PAGE_READWRITE);
+    uint8_t* hashTable = (uint8_t*)malloc(hashTableSize);
     if (!hashTable) { CloseHandle(hFile); return NULL; }
 
     if (!ReadFile(hFile, hashTable, hashTableSize, &read, NULL) || read != hashTableSize) {
         LogF("ParseMixFile: ReadFile failed for hash table");
-        VirtualFree(hashTable, 0, MEM_RELEASE);
+        free(hashTable);
         CloseHandle(hFile); return NULL;
     }
 
@@ -290,7 +322,7 @@ MixArchive* ParseMixFile(const char* mixPath) {
         LogF("ParseMixFile: [%u] CRC=0x%08X offset=%u size=%u", i,
              mix->entries[i].crc, mix->entries[i].offset, mix->entries[i].size);
     }
-    VirtualFree(hashTable, 0, MEM_RELEASE);
+    free(hashTable);
 
     uint32_t bodyOffset = hashTableOffset + hashTableSize;
     LogF("ParseMixFile: bodyOffset=%u, bodySize=%u", bodyOffset, fileSize - bodyOffset);
@@ -311,38 +343,34 @@ MixArchive* ParseMixFile(const char* mixPath) {
 
         if (lmdOffset + lmdSize <= fileSize) {
             SetFilePointer(hFile, lmdOffset, NULL, FILE_BEGIN);
-            uint8_t* lmdData = (uint8_t*)VirtualAlloc(NULL, lmdSize, MEM_COMMIT, PAGE_READWRITE);
+            uint8_t* lmdData = (uint8_t*)malloc(lmdSize);
             if (lmdData) {
                 if (!ReadFile(hFile, lmdData, lmdSize, &read, NULL) || read != lmdSize) {
-                    VirtualFree(lmdData, 0, MEM_RELEASE);
+                    free(lmdData);
                 } else {
 
-                const uint8_t* nameStart = lmdData + 52;
-            int remaining = lmdSize - 52;
+                    const uint8_t* nameStart = lmdData + 52;
+                    int remaining = lmdSize - 52;
 
-                while (remaining > 0) {
-                    const char* name = (const char*)nameStart;
-                    int nameLen = (int)strnlen(name, remaining);
-                    if (nameLen == 0 || nameLen >= remaining) break;
+                    while (remaining > 0) {
+                        const char* name = (const char*)nameStart;
+                        int nameLen = (int)strnlen(name, remaining);
+                        if (nameLen == 0 || nameLen >= remaining) break;
 
-                    uint32_t computedCrc = MixCrc32(name);
+                        uint32_t computedCrc = MixCrc32(name);
 
-                    for (uint16_t i = 0; i < fileCount; i++) {
-                        if (mix->entries[i].crc == computedCrc && mix->entries[i].size > 0) {
-                            char resolved[MAX_PATH];
-                            _snprintf_s(resolved, sizeof(resolved), _TRUNCATE,
-                                        "%s\\%s", mixPath, name);
-
-                            LogF("LMD resolved: CRC=0x%08X -> %s (offset=%u, size=%u)",
-                                 computedCrc, name, mix->entries[i].offset, mix->entries[i].size);
-                            break;
+                        for (uint16_t i = 0; i < fileCount; i++) {
+                            if (mix->entries[i].crc == computedCrc && mix->entries[i].size > 0) {
+                                LogF("LMD resolved: CRC=0x%08X -> %s (offset=%u, size=%u)",
+                                     computedCrc, name, mix->entries[i].offset, mix->entries[i].size);
+                                break;
+                            }
                         }
-                    }
 
-                    nameStart += nameLen + 1;
-                    remaining -= nameLen + 1;
-                }
-                VirtualFree(lmdData, 0, MEM_RELEASE);
+                        nameStart += nameLen + 1;
+                        remaining -= nameLen + 1;
+                    }
+                    free(lmdData);
                 }
             }
         }
@@ -356,9 +384,10 @@ MixArchive* ParseMixFile(const char* mixPath) {
     return mix;
 }
 
-const char* FindBikNameInMix(const char* mixPath, DWORD filePos) {
+BOOL FindBikNameInMix(const char* mixPath, DWORD filePos, char* outName, int outNameSize) {
+    outName[0] = '\0';
     MixArchive* mix = ParseMixFile(mixPath);
-    if (!mix || !mix->valid) return NULL;
+    if (!mix || !mix->valid) return FALSE;
 
     uint32_t bodyOffset = 0xA + mix->fileCount * 12;
     uint32_t lmdCrc = 0x366E051F;
@@ -373,34 +402,34 @@ const char* FindBikNameInMix(const char* mixPath, DWORD filePos) {
         if (filePos >= entryStart && filePos < entryEnd) {
             HANDLE hFile = CreateFileA(mixPath, GENERIC_READ, FILE_SHARE_READ,
                                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile == INVALID_HANDLE_VALUE) return NULL;
+            if (hFile == INVALID_HANDLE_VALUE) return FALSE;
 
             int lmdIndex = -1;
             for (uint16_t j = 0; j < mix->fileCount; j++) {
                 if (mix->entries[j].crc == lmdCrc) { lmdIndex = j; break; }
             }
 
-            if (lmdIndex < 0) { CloseHandle(hFile); return NULL; }
+            if (lmdIndex < 0) { CloseHandle(hFile); return FALSE; }
 
+            DWORD fileSize = GetFileSize(hFile, NULL);
+            if (fileSize == INVALID_FILE_SIZE) { CloseHandle(hFile); return FALSE; }
             uint32_t lmdOffset = bodyOffset + mix->entries[lmdIndex].offset;
             uint32_t lmdSize = mix->entries[lmdIndex].size;
-            if (lmdSize <= 52) { CloseHandle(hFile); return NULL; }
+            if (lmdSize <= 52 || lmdOffset + lmdSize > fileSize) { CloseHandle(hFile); return FALSE; }
 
             SetFilePointer(hFile, lmdOffset, NULL, FILE_BEGIN);
-            uint8_t* lmdData = (uint8_t*)VirtualAlloc(NULL, lmdSize, MEM_COMMIT, PAGE_READWRITE);
-            if (!lmdData) { CloseHandle(hFile); return NULL; }
+            uint8_t* lmdData = (uint8_t*)malloc(lmdSize);
+            if (!lmdData) { CloseHandle(hFile); return FALSE; }
 
             DWORD read;
             if (!ReadFile(hFile, lmdData, lmdSize, &read, NULL) || read != lmdSize) {
-                VirtualFree(lmdData, 0, MEM_RELEASE);
-                CloseHandle(hFile); return NULL;
+                free(lmdData);
+                CloseHandle(hFile); return FALSE;
             }
             CloseHandle(hFile);
 
             const uint8_t* nameStart = lmdData + 52;
             int remaining = lmdSize - 52;
-            static char resolvedName[MAX_PATH];
-            resolvedName[0] = '\0';
 
             while (remaining > 0) {
                 const char* name = (const char*)nameStart;
@@ -409,7 +438,7 @@ const char* FindBikNameInMix(const char* mixPath, DWORD filePos) {
 
                 uint32_t computedCrc = MixCrc32(name);
                 if (computedCrc == mix->entries[i].crc) {
-                    strncpy_s(resolvedName, sizeof(resolvedName), name, _TRUNCATE);
+                    strncpy_s(outName, outNameSize, name, _TRUNCATE);
                     break;
                 }
 
@@ -417,11 +446,11 @@ const char* FindBikNameInMix(const char* mixPath, DWORD filePos) {
                 remaining -= nameLen + 1;
             }
 
-            VirtualFree(lmdData, 0, MEM_RELEASE);
-            return resolvedName[0] ? resolvedName : NULL;
+            free(lmdData);
+            return outName[0] ? TRUE : FALSE;
         }
     }
-    return NULL;
+    return FALSE;
 }
 
 const char* FindWavForBik(const char* bikPath, const char* mixName) {

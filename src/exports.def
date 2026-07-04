@@ -80,7 +80,7 @@ EXPORTS
     _ExpandBink@56=_sExpandBink@56 @78
     _ExpandBundleSizes@8=_sExpandBundleSizes@8 @79
     _RADSetMemory@8=_sRADSetMemory@8 @80
-    _BinkSetMemory@8=_sRADSetMemory@8
+    _BinkSetMemory@8=_sBinkSetMemory@8 @108
     _RADTimerRead@0=_sRADTimerRead@0 @81
     _radmalloc@4=_sradmalloc@4 @82
     _radfree@4=_sradfree@4 @83

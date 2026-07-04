@@ -15,6 +15,8 @@ cmake-build-*/
 
 # Build artifacts
 build/
+build_tests/
+test_run/
 x64/
 Win32/
 Debug/
@@ -44,3 +46,10 @@ cmake_install.cmake
 *.vcxproj.filters
 *.sln
 *.slnx
+
+# Test data (temp files)
+tests/data/
+
+# Downloaded tools (auto-downloaded by tools/setup.ps1)
+tools/dumpbin/
+tools/ffmpeg.exe
