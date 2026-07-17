@@ -3,7 +3,7 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-255%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-265%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -68,12 +68,12 @@ build_tests\tests\Release\binkw32w_tests.exe
 
 ### 📈 Покрытие тестами
 
-255 тестов в 31 тестовом сьюте, покрывающих все основные модули:
+265 тестов в 32 тестовом сьюте, покрывающих все основные модули:
 
 | Модуль | Тестов | Покрытие |
 |--------|--------|----------|
 | config.cpp (CRC32, парсер .mix, заголовки .bik, декодер .wav, парсер конфига) | 78 | 100% |
-| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, жизненный цикл DLL, ExtractFileName) | 47 | 100% |
+| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, жизненный цикл DLL, ExtractFileName, BINKIOPROCESSOR) | 57 | 100% |
 | wav_player.cpp (alloc, free, start, stop, pause, resume, seek) | 35 | 100% |
 | logging.cpp (Log, LogF, TrimRight, ротация файлов) | 1 | 100% |
 | audio_decoder.cpp (WAV, OGG, негативные тесты) | 21 | 100% |
@@ -314,9 +314,10 @@ Proxy_Bink32w/
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test suite (255 тестов, 31 сьют)
+├── tests/                   # Google Test suite (265 тестов, 32 сьюта)
 │   ├── test_proxy_core.cpp  # TrackVideo, UntrackVideo, FindVideo
 │   ├── test_uncovered.cpp   # LogCallStack, EnsureInitialized, Scaling, sBinkClose, ExtractFileName
+│   ├── test_binkioprocessor.cpp # Обработка флага BINKIOPROCESSOR, проверки ExtractFileName
 │   ├── test_corrupt_data.cpp # Негативные тесты для битых .mix, .bik, .wav, конфига
 │   ├── test_config_parser.cpp
 │   ├── test_audio_decoder.cpp

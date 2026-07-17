@@ -31,6 +31,7 @@ add_executable(bink32w_tests
     test_logging.cpp
     test_proxy_core.cpp
     test_corrupt_data.cpp
+    test_binkioprocessor.cpp
     test_uncovered.cpp
     ${CMAKE_SOURCE_DIR}/src/config.cpp
     ${CMAKE_SOURCE_DIR}/src/logging.cpp

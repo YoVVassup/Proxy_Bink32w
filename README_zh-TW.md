@@ -3,7 +3,7 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-255%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-265%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -72,12 +72,12 @@ build_tests\tests\Release\bink32w_tests.exe
 
 ### 📈 測試覆蓋率
 
-255 個測試分佈在 31 個測試套件中，覆蓋所有核心模組：
+265 個測試分佈在 32 個測試套件中，覆蓋所有核心模組：
 
 | 模組 | 測試數 | 覆蓋率 |
 |------|--------|--------|
 | config.cpp（CRC32、.mix 解析器、.bik 標頭、.wav 解碼器、設定解析器） | 78 | 100% |
-| binkw32_proxy.cpp（TrackVideo、UntrackVideo、FindVideo、縮放、DLL 生命週期、ExtractFileName） | 47 | 100% |
+| binkw32_proxy.cpp（TrackVideo、UntrackVideo、FindVideo、縮放、DLL 生命週期、ExtractFileName、BINKIOPROCESSOR） | 57 | 100% |
 | wav_player.cpp（分配、釋放、啟動、停止、暫停、恢復、跳轉） | 35 | 100% |
 | logging.cpp（Log、LogF、TrimRight、檔案輪替） | 1 | 100% |
 | audio_decoder.cpp（WAV、OGG、負面測試） | 21 | 100% |
@@ -318,9 +318,10 @@ Proxy_Bink32w/
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test 套件（255 個測試，31 個測試套件）
+├── tests/                   # Google Test 套件（265 個測試，32 個測試套件）
 │   ├── test_proxy_core.cpp  # TrackVideo、UntrackVideo、FindVideo
 │   ├── test_uncovered.cpp   # LogCallStack、EnsureInitialized、縮放、sBinkClose、ExtractFileName
+│   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR 旗標處理、ExtractFileName 旗標檢查
 │   ├── test_corrupt_data.cpp # 損壞 .mix、.bik、.wav、設定的負面測試
 │   ├── test_config_parser.cpp
 │   ├── test_audio_decoder.cpp

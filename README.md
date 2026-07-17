@@ -3,7 +3,7 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-255%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-265%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -72,12 +72,12 @@ build_tests\tests\Release\bink32w_tests.exe
 
 ### 📈 Test coverage
 
-255 tests across 31 test suites covering all core modules:
+265 tests across 32 test suites covering all core modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | config.cpp (CRC32, .mix parser, .bik header, .wav decoder, config parser) | 78 | 100% |
-| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, DLL lifecycle, ExtractFileName) | 47 | 100% |
+| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, DLL lifecycle, ExtractFileName, BINKIOPROCESSOR) | 57 | 100% |
 | wav_player.cpp (alloc, free, start, stop, pause, resume, seek) | 35 | 100% |
 | logging.cpp (Log, LogF, TrimRight, file rotation) | 1 | 100% |
 | audio_decoder.cpp (WAV, OGG, negative tests) | 21 | 100% |
@@ -318,9 +318,10 @@ Proxy_Bink32w/
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test suite (255 tests, 31 suites)
+├── tests/                   # Google Test suite (265 tests, 32 suites)
 │   ├── test_proxy_core.cpp  # TrackVideo, UntrackVideo, FindVideo
 │   ├── test_uncovered.cpp   # LogCallStack, EnsureInitialized, Scaling, sBinkClose, ExtractFileName
+│   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR flag handling, ExtractFileName flag checks
 │   ├── test_corrupt_data.cpp # Negative tests for malformed .mix, .bik, .wav, config
 │   ├── test_config_parser.cpp
 │   ├── test_audio_decoder.cpp

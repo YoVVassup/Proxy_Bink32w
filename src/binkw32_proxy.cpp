@@ -19,7 +19,7 @@
 // ============================================================================
 
 // ============================================================================
-// Proxy_Bink32w v2.0.0 — Bink Video API Proxy DLL
+// Proxy_Bink32w v2.0.1 — Bink Video API Proxy DLL
 //
 // Drop-in binkw32.dll replacement that intercepts Bink video API calls.
 // Features: audio replacement (.bik -> .wav), .mix archive parsing,
@@ -382,6 +382,10 @@ static void ExtractFileName(void* a, DWORD flags, char* out, int outSize) {
         return;
     }
 
+    if (flags & 0x02000000) {
+        return;
+    }
+
     if (a) {
         strncpy_s(out, outSize, (const char*)a, _TRUNCATE);
     }
@@ -505,6 +509,10 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
     char mixFileName[MAX_PATH] = "";
     char* bikName = extractedName;
 
+    if (flags & 0x02000000) {
+        LogF("BinkOpen: BINKIOPROCESSOR mode, first param=%p (custom IO context)", a);
+    }
+
     if (flags & 0x00800000) {
         HANDLE hFile = (HANDLE)(intptr_t)a;
         DWORD pos = SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
@@ -536,7 +544,10 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
         }
 
         LogCallStack(1);
-    } else if (a && !(flags & 0x04000000)) {
+    } else if (a && !(flags & 0x04000000) && !(flags & 0x02000000)) {
+        // Only treat 'a' as filename string when no special flag is set.
+        // BINK_FROM_MEMORY (0x04000000): 'a' is a memory buffer pointer
+        // BINKIOPROCESSOR (0x02000000): 'a' is a custom IO context (e.g. CCFileClass*)
         bikName = (char*)a;
     }
 
