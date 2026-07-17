@@ -183,3 +183,4 @@ void UntrackVideo(void* h);
 VideoInfo* FindVideo(void* h);
 void LogCallStack(int skip);
 int BppFromFlags(int flags);
+BOOL ExtractNameFromCCFileClass(void* ccFile, char* out, int outSize);

@@ -14,6 +14,7 @@ extern void TrackVideo(void* h, const char* bikPath, const char* mixName);
 extern void UntrackVideo(void* h);
 extern VideoInfo* FindVideo(void* h);
 extern void ExtractFileName(void* a, DWORD flags, char* out, int outSize);
+extern BOOL ExtractNameFromCCFileClass(void* ccFile, char* out, int outSize);
 
 extern VideoInfo g_vids[];
 extern int g_vidCount;
@@ -28,6 +29,9 @@ extern "C" {
     intptr_t __stdcall sBinkPause(void* a, void* b);
     void __stdcall sBinkSetWillLoop(void* a, void* b);
     intptr_t __stdcall sBinkWait(void* a);
+    void __stdcall sBinkGoto(void* a, void* b, void* c);
+    void __stdcall sBinkSetVolume2(void* a, void* b);
+    void __stdcall sBinkSetSoundOnOff(void* a, void* b);
 }
 
 // --- Mock BinkGetSummary callback type ---
@@ -44,6 +48,7 @@ extern void* pBinkSetPan;
 extern void* pBinkGoto;
 extern void* pBinkWait;
 extern void* pBinkPause;
+extern void* pBinkSetSoundOnOff;
 
 // --- Functions under test (from config.cpp) ---
 // MixCrc32 and ReadU32/ReadU16 are already accessible via the header.

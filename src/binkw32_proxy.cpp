@@ -391,6 +391,96 @@ static void ExtractFileName(void* a, DWORD flags, char* out, int outSize) {
     }
 }
 
+// ============================================================================
+// Extract filename from CCFileClass*
+//
+// When BINKIOPROCESSOR flag is used, the first parameter to BinkOpen is a
+// CCFileClass* (RA2/YR engine). We extract the .bik filename for audio
+// replacement matching using two approaches:
+//
+// 1. Vtable: call GetFileName() via vtable[1] (FileClass hierarchy from YRpp)
+// 2. Fallback: read FileName field at offset 24 (RawFileClass::FileName)
+//
+// The fallback handles cases where the vtable is hooked by third-party code
+// (e.g., IHCore hooks CCFileClass methods to redirect I/O to zip archives).
+// Both approaches use SEH to protect against invalid memory access.
+// ============================================================================
+
+#ifdef BINK_TEST_BUILD
+BOOL ExtractNameFromCCFileClass(void* ccFile, char* out, int outSize) {
+#else
+static BOOL ExtractNameFromCCFileClass(void* ccFile, char* out, int outSize) {
+#endif
+    if (!ccFile || !out || outSize <= 0) return FALSE;
+    out[0] = '\0';
+
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ccFile, &mbi, sizeof(mbi)) < sizeof(mbi)) return FALSE;
+    if (!(mbi.State & MEM_COMMIT) || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return FALSE;
+
+    const char* name = NULL;
+
+    // Approach 1: vtable GetFileName() — vtable[1] in FileClass hierarchy
+    __try {
+        void** vtable = *(void***)ccFile;
+        if (vtable &&
+            VirtualQuery(vtable, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
+            (mbi.State & MEM_COMMIT) && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+
+            void* fnPtr = vtable[1];
+            if (fnPtr &&
+                VirtualQuery(fnPtr, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
+                (mbi.State & MEM_COMMIT)) {
+
+                DWORD prot = mbi.Protect & 0xFF;
+                if (prot == PAGE_EXECUTE || prot == PAGE_EXECUTE_READ ||
+                    prot == PAGE_EXECUTE_READWRITE || prot == PAGE_EXECUTE_WRITECOPY) {
+
+                    typedef const char* (__thiscall *GetFileNameFn)(void* thisptr);
+                    GetFileNameFn getFileName = (GetFileNameFn)fnPtr;
+                    name = getFileName(ccFile);
+                }
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        name = NULL;
+    }
+
+    if (name && name[0] != '\0') {
+        if (VirtualQuery((void*)name, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
+            (mbi.State & MEM_COMMIT) && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+
+            size_t len = strnlen(name, 256);
+            if (len > 0 && len < 256) {
+                strncpy_s(out, outSize, name, _TRUNCATE);
+                LogF("CCFileClass: extracted '%s' via vtable", out);
+                return TRUE;
+            }
+        }
+    }
+
+    // Approach 2: RawFileClass::FileName at offset 24
+    // Works when vtable is hooked (IHCore) or has unexpected layout
+    __try {
+        const char* fallbackName = *(const char**)((const char*)ccFile + 24);
+        if (fallbackName && fallbackName[0] != '\0' &&
+            VirtualQuery((void*)fallbackName, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
+            (mbi.State & MEM_COMMIT) && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+
+            size_t len = strnlen(fallbackName, 256);
+            if (len > 0 && len < 256) {
+                strncpy_s(out, outSize, fallbackName, _TRUNCATE);
+                LogF("CCFileClass: extracted '%s' via FileName offset", out);
+                return TRUE;
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+    }
+
+    LogF("CCFileClass: failed to extract filename from %p", ccFile);
+    return FALSE;
+}
+
 void LogCallStack(int skip) {
     void* stack[8];
     USHORT frames = CaptureStackBackTrace(skip, 8, stack, NULL);
@@ -511,6 +601,11 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
 
     if (flags & 0x02000000) {
         LogF("BinkOpen: BINKIOPROCESSOR mode, first param=%p (custom IO context)", a);
+        if (ExtractNameFromCCFileClass(a, extractedName, sizeof(extractedName))) {
+            bikName = extractedName;
+        } else {
+            LogF("BINKIOPROCESSOR: could not extract filename from %p — audio replacement disabled", a);
+        }
     }
 
     if (flags & 0x00800000) {

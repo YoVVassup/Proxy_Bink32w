@@ -15,6 +15,7 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 
 set(TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
+file(MAKE_DIRECTORY ${TEST_DATA_DIR})
 
 add_executable(bink32w_tests
     mock_waveout.cpp

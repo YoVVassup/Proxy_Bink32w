@@ -313,7 +313,8 @@ TEST_F(IntegrationConfigTest, RealExceptionPriority) {
     if (exceptionResult) EXPECT_STREQ(exceptionResult, "BinkWAV\\RA2\\a01_f00e.wav");
 
     const char* noMixResult = FindWavForBik("a01_f00e.bik", NULL);
-    EXPECT_EQ(noMixResult, (const char*)NULL);
+    EXPECT_NE(noMixResult, (const char*)NULL);
+    if (noMixResult) EXPECT_STREQ(noMixResult, "BinkWAV\\RA2\\a01_f00e.wav");
 }
 
 // ============================================================================
@@ -321,10 +322,6 @@ TEST_F(IntegrationConfigTest, RealExceptionPriority) {
 // ============================================================================
 
 TEST(Integration_WavDecode, DecodeRealWavFile) {
-    if (!HasGameDir()) {
-        GTEST_SKIP() << "Game directory not set — skipping WAV decode test";
-    }
-
     const char* candidates[] = {
         "BinkWAV\\RA2\\westlogo.wav",
         "BinkWAV\\RA2\\a01_f00e.wav",
@@ -332,21 +329,36 @@ TEST(Integration_WavDecode, DecodeRealWavFile) {
     };
 
     BOOL foundAny = FALSE;
-    for (const char* rel : candidates) {
-        std::string fullPath = GamePath(rel);
+
+    if (HasGameDir()) {
+        for (const char* rel : candidates) {
+            std::string fullPath = GamePath(rel);
+            DecodedAudio audio = {0};
+            if (DecodeAudioFile(fullPath.c_str(), &audio)) {
+                foundAny = TRUE;
+                EXPECT_GT(audio.pcmSize, 0u);
+                EXPECT_NE(audio.pcmData, (char*)NULL);
+                EXPECT_EQ(audio.format.wFormatTag, WAVE_FORMAT_PCM);
+                if (audio.pcmData) VirtualFree(audio.pcmData, 0, MEM_RELEASE);
+                break;
+            }
+        }
+    }
+
+    if (!foundAny) {
+        std::string thirdPartyPath = ProjectRoot() + "\\third-party\\a04_f00e.wav";
         DecodedAudio audio = {0};
-        if (DecodeAudioFile(fullPath.c_str(), &audio)) {
+        if (DecodeAudioFile(thirdPartyPath.c_str(), &audio)) {
             foundAny = TRUE;
             EXPECT_GT(audio.pcmSize, 0u);
             EXPECT_NE(audio.pcmData, (char*)NULL);
             EXPECT_EQ(audio.format.wFormatTag, WAVE_FORMAT_PCM);
             if (audio.pcmData) VirtualFree(audio.pcmData, 0, MEM_RELEASE);
-            break;
         }
     }
 
     if (!foundAny) {
-        GTEST_SKIP() << "No WAV files found in " << GameDir();
+        GTEST_SKIP() << "No WAV files found in " << GameDir() << " or third-party/";
     }
 }
 

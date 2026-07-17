@@ -3,7 +3,7 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-265%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-295%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -72,17 +72,17 @@ build_tests\tests\Release\bink32w_tests.exe
 
 ### 📈 測試覆蓋率
 
-265 個測試分佈在 32 個測試套件中，覆蓋所有核心模組：
+295 個測試分佈在 38 個測試套件中，覆蓋所有核心模組：
 
 | 模組 | 測試數 | 覆蓋率 |
 |------|--------|--------|
 | config.cpp（CRC32、.mix 解析器、.bik 標頭、.wav 解碼器、設定解析器） | 78 | 100% |
-| binkw32_proxy.cpp（TrackVideo、UntrackVideo、FindVideo、縮放、DLL 生命週期、ExtractFileName、BINKIOPROCESSOR） | 57 | 100% |
+| binkw32_proxy.cpp（TrackVideo、UntrackVideo、FindVideo、縮放、DLL 生命週期、ExtractFileName、BINKIOPROCESSOR、CCFileClass） | 78 | 100% |
 | wav_player.cpp（分配、釋放、啟動、停止、暫停、恢復、跳轉） | 35 | 100% |
-| logging.cpp（Log、LogF、TrimRight、檔案輪替） | 1 | 100% |
+| logging.cpp（Log、LogF、TrimRight） | 13 | 100% |
 | audio_decoder.cpp（WAV、OGG、負面測試） | 21 | 100% |
 | 損壞資料測試（畸形 .mix、.bik、.wav、設定） | 26 | — |
-| 整合測試（DLL 匯出、序數、真實檔案） | 13 | — |
+| 整合測試（DLL 匯出、序數、真實檔案、WAV 解碼） | 14 | — |
 | 第三方（OGG、WAV、跨格式、.mix） | 15 | — |
 
 ## 📦 安裝
@@ -235,6 +235,18 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 5. 替換視訊的 Bink 音訊自動靜音
 6. `BinkClose` 時停止播放
 
+### BINKIOPROCESSOR / CCFileClass 支援
+
+當遊戲使用 `BINKIOPROCESSOR` (0x02000000) 標誌呼叫 `BinkOpen` 時，第一個參數是 `CCFileClass*` 指標而非檔名或檔案控制代碼。IHCore 等模組使用此方式從 zip 壓縮檔中讀取 `.bik` 檔案。
+
+代理自動從 `CCFileClass` 提取 `.bik` 檔名，使用兩種方式：
+1. **Vtable**：透過 vtable[1] 呼叫 `GetFileName()`（YRpp 中的 FileClass 層級）
+2. **Fallback**：直接讀取 offset 24 處的 `FileName` 欄位（RawFileClass）
+
+兩種方式均使用 SEH 保護防止無效記憶體存取。提取檔名後，代理在所有 `[exception]` 區段中搜尋匹配的 `.bik` 名稱，然後回退到 `[audio]`。
+
+如果檔名提取失敗（例如非 CCFileClass 上下文），音訊替換被停用但影片正常播放。
+
 ## 📁 .mix 壓縮檔解析
 
 代理解析 RA2/YR `.mix` 壓縮檔格式：
@@ -318,10 +330,10 @@ Proxy_Bink32w/
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test 套件（265 個測試，32 個測試套件）
+├── tests/                   # Google Test 套件（295 個測試，38 個測試套件）
 │   ├── test_proxy_core.cpp  # TrackVideo、UntrackVideo、FindVideo
-│   ├── test_uncovered.cpp   # LogCallStack、EnsureInitialized、縮放、sBinkClose、ExtractFileName
-│   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR 旗標處理、ExtractFileName 旗標檢查
+│   ├── test_uncovered.cpp   # LogCallStack、EnsureInitialized、Scaling、sBinkClose、sBinkPause、sBinkGoto、sBinkSetVolume2、sBinkSetSoundOnOff、ExtractFileName
+│   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR 標誌處理、ExtractNameFromCCFileClass
 │   ├── test_corrupt_data.cpp # 損壞 .mix、.bik、.wav、設定的負面測試
 │   ├── test_config_parser.cpp
 │   ├── test_audio_decoder.cpp

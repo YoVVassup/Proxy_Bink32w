@@ -194,3 +194,35 @@ TEST(BinkOpenParamTest, FileHandleNotTreatedAsString) {
     // FileHandle flag is handled separately, not as string
     EXPECT_EQ(bikName, (const char*)NULL);
 }
+
+// ============================================================================
+// ExtractNameFromCCFileClass tests
+// ============================================================================
+
+TEST(ExtractNameFromCCFileClassTest, NullPointerReturnsFalse) {
+    char out[MAX_PATH] = {0};
+    EXPECT_FALSE(ExtractNameFromCCFileClass(NULL, out, sizeof(out)));
+    EXPECT_EQ(out[0], '\0');
+}
+
+TEST(ExtractNameFromCCFileClassTest, InvalidPointerReturnsFalse) {
+    char out[MAX_PATH] = {0};
+    EXPECT_FALSE(ExtractNameFromCCFileClass((void*)0x00000001, out, sizeof(out)));
+    EXPECT_EQ(out[0], '\0');
+}
+
+TEST(ExtractNameFromCCFileClassTest, NullOutputReturnsFalse) {
+    EXPECT_FALSE(ExtractNameFromCCFileClass((void*)0x12345678, NULL, MAX_PATH));
+}
+
+TEST(ExtractNameFromCCFileClassTest, ZeroSizeReturnsFalse) {
+    char out[MAX_PATH] = {0};
+    EXPECT_FALSE(ExtractNameFromCCFileClass((void*)0x12345678, out, 0));
+}
+
+TEST(ExtractNameFromCCFileClassTest, GarbagePointerReturnsFalse) {
+    char out[MAX_PATH] = {0};
+    // Unmapped memory
+    EXPECT_FALSE(ExtractNameFromCCFileClass((void*)0x00000010, out, sizeof(out)));
+    EXPECT_EQ(out[0], '\0');
+}

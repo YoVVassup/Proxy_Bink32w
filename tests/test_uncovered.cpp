@@ -433,3 +433,457 @@ TEST(ExtractFileNameTest, TruncatesLongPath) {
     EXPECT_LT(strlen(out), sizeof(out));
     EXPECT_STREQ(out, "very_long");
 }
+
+// ============================================================================
+// Mock BinkSetVolume / BinkSetSoundOnOff — record calls for verification
+// ============================================================================
+
+int g_setVolumeCalled = 0;
+void* g_setVolumeHandle = NULL;
+void* g_setVolumeArg = NULL;
+
+intptr_t __stdcall MockSetVolume(void* a, void* b) {
+    g_setVolumeCalled++;
+    g_setVolumeHandle = a;
+    g_setVolumeArg = b;
+    return 0;
+}
+
+int g_setSoundOnOffCalled = 0;
+void* g_setSoundOnOffHandle = NULL;
+void* g_setSoundOnOffArg = NULL;
+
+void __stdcall MockSetSoundOnOff(void* a, void* b) {
+    g_setSoundOnOffCalled++;
+    g_setSoundOnOffHandle = a;
+    g_setSoundOnOffArg = b;
+}
+
+// ============================================================================
+// sBinkPause tests
+// ============================================================================
+
+class SBinkPauseTest : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedPause;
+    int savedCount;
+    WavPlayer savedPlayers[MAX_WAV_PLAYERS];
+    int savedPlayerCount;
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedPause = pBinkPause;
+        savedCount = g_vidCount;
+        memcpy(savedPlayers, g_players, sizeof(g_players));
+        savedPlayerCount = g_playerCount;
+
+        pBinkGetSummary = (void*)MockSummary;
+        pBinkPause = NULL;
+        g_vidCount = 0;
+        g_playerCount = 0;
+        g_mW = 640;
+        g_mH = 480;
+        g_mFR = 30;
+        g_mFRD = 1;
+    }
+
+    void TearDown() override {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].wavPlayer) {
+                FreePlayer(g_vids[i].wavPlayer);
+                g_vids[i].wavPlayer = NULL;
+            }
+        }
+        for (int i = 0; i < g_playerCount; i++) {
+            if (g_players[i].hWave) {
+                FreePlayer(&g_players[i]);
+            }
+        }
+        pBinkGetSummary = savedSummary;
+        pBinkPause = savedPause;
+        g_vidCount = savedCount;
+        memcpy(g_players, savedPlayers, sizeof(g_players));
+        g_playerCount = savedPlayerCount;
+    }
+
+    WavPlayer* SetupVideoWithPlayer(void* handle) {
+        TrackVideo(handle, "test.bik", NULL);
+        VideoInfo* vi = FindVideo(handle);
+        if (!vi) return NULL;
+        WavPlayer* pl = AllocPlayer();
+        if (!pl) return NULL;
+        vi->wavPlayer = pl;
+        pl->hWave = (HWAVEOUT)0x12345678;
+        pl->playing = TRUE;
+        pl->paused = FALSE;
+        pl->format.nSamplesPerSec = 22050;
+        pl->format.wBitsPerSample = 16;
+        pl->format.nChannels = 2;
+        pl->format.nBlockAlign = 4;
+        return pl;
+    }
+};
+
+TEST_F(SBinkPauseTest, PauseWithPlayer) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    EXPECT_FALSE(pl->paused);
+
+    sBinkPause(handle, (void*)1);
+    EXPECT_TRUE(pl->paused);
+}
+
+TEST_F(SBinkPauseTest, ResumeWithPlayer) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    pl->paused = TRUE;
+
+    sBinkPause(handle, (void*)0);
+    EXPECT_FALSE(pl->paused);
+}
+
+TEST_F(SBinkPauseTest, PauseWithoutPlayer) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    sBinkPause(handle, (void*)1);
+    SUCCEED();
+}
+
+TEST_F(SBinkPauseTest, UnknownHandle) {
+    sBinkPause((void*)0x9999, (void*)1);
+    SUCCEED();
+}
+
+TEST_F(SBinkPauseTest, PauseResumeCycle) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    sBinkPause(handle, (void*)1);
+    EXPECT_TRUE(pl->paused);
+
+    sBinkPause(handle, (void*)0);
+    EXPECT_FALSE(pl->paused);
+
+    sBinkPause(handle, (void*)1);
+    EXPECT_TRUE(pl->paused);
+
+    sBinkPause(handle, (void*)0);
+    EXPECT_FALSE(pl->paused);
+}
+
+// ============================================================================
+// sBinkGoto tests
+// ============================================================================
+
+class SBinkGotoTest : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedGoto;
+    void* savedGetSummary;
+    int savedCount;
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedGoto = pBinkGoto;
+        savedGetSummary = pBinkGetSummary;
+        savedCount = g_vidCount;
+
+        pBinkGoto = NULL;
+        pBinkGetSummary = (void*)MockSummary;
+        g_vidCount = 0;
+        g_mW = 640;
+        g_mH = 480;
+        g_mFR = 30;
+        g_mFRD = 1;
+    }
+
+    void TearDown() override {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].wavPlayer) {
+                FreePlayer(g_vids[i].wavPlayer);
+                g_vids[i].wavPlayer = NULL;
+            }
+        }
+        pBinkGetSummary = savedGetSummary;
+        pBinkGoto = savedGoto;
+        g_vidCount = savedCount;
+    }
+
+    WavPlayer* SetupVideoWithPlayer(void* handle) {
+        TrackVideo(handle, "test.bik", NULL);
+        VideoInfo* vi = FindVideo(handle);
+        if (!vi) return NULL;
+        WavPlayer* pl = AllocPlayer();
+        if (!pl) return NULL;
+        vi->wavPlayer = pl;
+        pl->hWave = (HWAVEOUT)0x12345678;
+        pl->playing = TRUE;
+        pl->paused = FALSE;
+        pl->pcmSize = 22050 * 4 * 10;
+        pl->pcmPos = 0;
+        pl->format.nSamplesPerSec = 22050;
+        pl->format.wBitsPerSample = 16;
+        pl->format.nChannels = 2;
+        pl->format.nBlockAlign = 4;
+        return pl;
+    }
+};
+
+TEST_F(SBinkGotoTest, SeekToFrame0) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    pBinkGoto = NULL;
+    sBinkGoto(handle, (void*)0, NULL);
+    EXPECT_EQ(pl->pcmPos, (DWORD)0);
+}
+
+TEST_F(SBinkGotoTest, SeekToFrame10) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    sBinkGoto(handle, (void*)10, NULL);
+    // frame=10, fps=30/1, samplesPerSec=22050
+    // sampleOffset = 10 * 22050 * 1 / 30 = 7350
+    // byteOffset = 7350 * 4 = 29400
+    DWORD expectedByte = 7350 * pl->format.nBlockAlign;
+    EXPECT_EQ(pl->pcmPos, expectedByte);
+}
+
+TEST_F(SBinkGotoTest, SeekWithoutPlayer) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    pBinkGoto = NULL;
+    sBinkGoto(handle, (void*)5, NULL);
+    SUCCEED();
+}
+
+TEST_F(SBinkGotoTest, UnknownHandle) {
+    pBinkGoto = NULL;
+    sBinkGoto((void*)0x9999, (void*)5, NULL);
+    SUCCEED();
+}
+
+TEST_F(SBinkGotoTest, NullSummaryFnSkipsSeek) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    DWORD savedPos = pl->pcmPos;
+
+    void* savedFn = pBinkGetSummary;
+    pBinkGetSummary = NULL;
+    sBinkGoto(handle, (void*)10, NULL);
+    pBinkGetSummary = savedFn;
+
+    EXPECT_EQ(pl->pcmPos, savedPos);
+}
+
+TEST_F(SBinkGotoTest, ZeroFrameRateSkipsSeek) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    DWORD savedPos = pl->pcmPos;
+
+    g_mFR = 0;
+    sBinkGoto(handle, (void*)10, NULL);
+    EXPECT_EQ(pl->pcmPos, savedPos);
+}
+
+TEST_F(SBinkGotoTest, SeekClampsToMax) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    pl->pcmSize = 100;
+
+    sBinkGoto(handle, (void*)1000000, NULL);
+    EXPECT_LE(pl->pcmPos, pl->pcmSize);
+}
+
+// ============================================================================
+// sBinkSetVolume2 tests
+// ============================================================================
+
+class SBinkSetVolume2Test : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedVolume;
+    int savedCount;
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedVolume = pBinkSetVolume;
+        savedCount = g_vidCount;
+
+        pBinkGetSummary = (void*)MockSummary;
+        pBinkSetVolume = (void*)MockSetVolume;
+        g_vidCount = 0;
+        g_setVolumeCalled = 0;
+        g_setVolumeHandle = NULL;
+        g_setVolumeArg = NULL;
+        g_mW = 640;
+        g_mH = 480;
+        g_mFR = 30;
+        g_mFRD = 1;
+    }
+
+    void TearDown() override {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].wavPlayer) {
+                FreePlayer(g_vids[i].wavPlayer);
+                g_vids[i].wavPlayer = NULL;
+            }
+        }
+        pBinkGetSummary = savedSummary;
+        pBinkSetVolume = savedVolume;
+        g_vidCount = savedCount;
+    }
+
+    WavPlayer* SetupVideoWithPlayer(void* handle) {
+        TrackVideo(handle, "test.bik", NULL);
+        VideoInfo* vi = FindVideo(handle);
+        if (!vi) return NULL;
+        WavPlayer* pl = AllocPlayer();
+        if (!pl) return NULL;
+        vi->wavPlayer = pl;
+        pl->hWave = (HWAVEOUT)0x12345678;
+        pl->playing = TRUE;
+        return pl;
+    }
+};
+
+TEST_F(SBinkSetVolume2Test, MutesWithPlayer) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetVolume2(handle, (void*)0x5999);
+    EXPECT_EQ(g_setVolumeCalled, 1);
+    EXPECT_EQ(g_setVolumeHandle, handle);
+    EXPECT_EQ(g_setVolumeArg, (void*)0);
+}
+
+TEST_F(SBinkSetVolume2Test, ForwardsWithoutPlayer) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    sBinkSetVolume2(handle, (void*)0x5999);
+    EXPECT_EQ(g_setVolumeCalled, 1);
+    EXPECT_EQ(g_setVolumeHandle, handle);
+    EXPECT_EQ(g_setVolumeArg, (void*)0x5999);
+}
+
+TEST_F(SBinkSetVolume2Test, UnknownHandleForwards) {
+    sBinkSetVolume2((void*)0x9999, (void*)0x5999);
+    EXPECT_EQ(g_setVolumeCalled, 1);
+    EXPECT_EQ(g_setVolumeArg, (void*)0x5999);
+}
+
+TEST_F(SBinkSetVolume2Test, MutesAlwaysZero) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetVolume2(handle, (void*)0xFFFF);
+    EXPECT_EQ(g_setVolumeArg, (void*)0);
+}
+
+// ============================================================================
+// sBinkSetSoundOnOff tests
+// ============================================================================
+
+class SBinkSetSoundOnOffTest : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedSoundOnOff;
+    int savedCount;
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedSoundOnOff = pBinkSetSoundOnOff;
+        savedCount = g_vidCount;
+
+        pBinkGetSummary = (void*)MockSummary;
+        pBinkSetSoundOnOff = (void*)MockSetSoundOnOff;
+        g_vidCount = 0;
+        g_setSoundOnOffCalled = 0;
+        g_setSoundOnOffHandle = NULL;
+        g_setSoundOnOffArg = NULL;
+        g_mW = 640;
+        g_mH = 480;
+        g_mFR = 30;
+        g_mFRD = 1;
+    }
+
+    void TearDown() override {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].wavPlayer) {
+                FreePlayer(g_vids[i].wavPlayer);
+                g_vids[i].wavPlayer = NULL;
+            }
+        }
+        pBinkGetSummary = savedSummary;
+        pBinkSetSoundOnOff = savedSoundOnOff;
+        g_vidCount = savedCount;
+    }
+
+    WavPlayer* SetupVideoWithPlayer(void* handle) {
+        TrackVideo(handle, "test.bik", NULL);
+        VideoInfo* vi = FindVideo(handle);
+        if (!vi) return NULL;
+        WavPlayer* pl = AllocPlayer();
+        if (!pl) return NULL;
+        vi->wavPlayer = pl;
+        pl->hWave = (HWAVEOUT)0x12345678;
+        pl->playing = TRUE;
+        return pl;
+    }
+};
+
+TEST_F(SBinkSetSoundOnOffTest, MutesOnWithPlayer) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetSoundOnOff(handle, (void*)1);
+    EXPECT_EQ(g_setSoundOnOffCalled, 1);
+    EXPECT_EQ(g_setSoundOnOffHandle, handle);
+    EXPECT_EQ(g_setSoundOnOffArg, (void*)0);
+}
+
+TEST_F(SBinkSetSoundOnOffTest, ForwardsOffWithPlayer) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetSoundOnOff(handle, (void*)0);
+    EXPECT_EQ(g_setSoundOnOffCalled, 1);
+    EXPECT_EQ(g_setSoundOnOffHandle, handle);
+    EXPECT_EQ(g_setSoundOnOffArg, (void*)0);
+}
+
+TEST_F(SBinkSetSoundOnOffTest, ForwardsWithoutPlayer) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    sBinkSetSoundOnOff(handle, (void*)1);
+    EXPECT_EQ(g_setSoundOnOffCalled, 1);
+    EXPECT_EQ(g_setSoundOnOffArg, (void*)1);
+}
+
+TEST_F(SBinkSetSoundOnOffTest, UnknownHandleForwards) {
+    sBinkSetSoundOnOff((void*)0x9999, (void*)1);
+    EXPECT_EQ(g_setSoundOnOffCalled, 1);
+    EXPECT_EQ(g_setSoundOnOffArg, (void*)1);
+}
+
+TEST_F(SBinkSetSoundOnOffTest, MutesAlwaysZero) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetSoundOnOff(handle, (void*)1);
+    EXPECT_EQ(g_setSoundOnOffArg, (void*)0);
+}

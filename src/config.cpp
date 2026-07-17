@@ -477,6 +477,18 @@ const char* FindWavForBik(const char* bikPath, const char* mixName) {
         }
     }
 
+    if (fileName && !mixName) {
+        for (int i = 0; i < g_exceptionCount; i++) {
+            for (int j = 0; j < g_exceptions[i].mapCount; j++) {
+                if (_stricmp(g_exceptions[i].maps[j].bikName, fileName) == 0) {
+                    LogF("Exception match (no mix): [%s] %s -> %s",
+                         g_exceptions[i].mixName, fileName, g_exceptions[i].maps[j].wavPath);
+                    return g_exceptions[i].maps[j].wavPath;
+                }
+            }
+        }
+    }
+
     for (int i = 0; i < g_audioMapCount; i++) {
         if (fileName && g_audioMaps[i].bikName[0]) {
             if (_stricmp(g_audioMaps[i].bikName, fileName) == 0) {

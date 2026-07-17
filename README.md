@@ -3,7 +3,7 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-265%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-295%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -72,17 +72,17 @@ build_tests\tests\Release\bink32w_tests.exe
 
 ### 📈 Test coverage
 
-265 tests across 32 test suites covering all core modules:
+295 tests across 38 test suites covering all core modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | config.cpp (CRC32, .mix parser, .bik header, .wav decoder, config parser) | 78 | 100% |
-| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, DLL lifecycle, ExtractFileName, BINKIOPROCESSOR) | 57 | 100% |
+| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, DLL lifecycle, ExtractFileName, BINKIOPROCESSOR, CCFileClass) | 78 | 100% |
 | wav_player.cpp (alloc, free, start, stop, pause, resume, seek) | 35 | 100% |
-| logging.cpp (Log, LogF, TrimRight, file rotation) | 1 | 100% |
+| logging.cpp (Log, LogF, TrimRight) | 13 | 100% |
 | audio_decoder.cpp (WAV, OGG, negative tests) | 21 | 100% |
 | Corrupt data (malformed .mix, .bik, .wav, config) | 26 | — |
-| Integration (DLL exports, ordinals, real files) | 13 | — |
+| Integration (DLL exports, ordinals, real files, WAV decode) | 14 | — |
 | Third-party (OGG, WAV, cross-format, .mix) | 15 | — |
 
 ## 📦 Installation
@@ -235,6 +235,18 @@ Reserved section names (`[audio]`, `[exception]`, `[log]`) cannot be used as `.m
 5. Bink audio is automatically muted (`BinkSetVolume` → 0) for the replaced video
 6. The playback stops when `BinkClose` is called
 
+### BINKIOPROCESSOR / CCFileClass support
+
+When the game uses `BINKIOPROCESSOR` (0x02000000) flag with `BinkOpen`, the first parameter is a `CCFileClass*` pointer instead of a filename or file handle. This is used by IHCore and similar mods to read `.bik` files from zip archives.
+
+The proxy automatically extracts the `.bik` filename from the `CCFileClass` using two approaches:
+1. **Vtable**: calls `GetFileName()` via vtable[1] (FileClass hierarchy from YRpp)
+2. **Fallback**: reads the `FileName` field directly at offset 24 (RawFileClass)
+
+Both approaches use SEH protection against invalid memory access. When the filename is extracted, the proxy searches all `[exception]` sections for a matching `.bik` name, then falls back to `[audio]`.
+
+If filename extraction fails (e.g., non-CCFileClass context), audio replacement is disabled but video playback works normally.
+
 ## 📁 .mix archive parsing
 
 The proxy parses RA2/YR `.mix` archive format:
@@ -318,10 +330,10 @@ Proxy_Bink32w/
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test suite (265 tests, 32 suites)
+├── tests/                   # Google Test suite (295 tests, 38 suites)
 │   ├── test_proxy_core.cpp  # TrackVideo, UntrackVideo, FindVideo
-│   ├── test_uncovered.cpp   # LogCallStack, EnsureInitialized, Scaling, sBinkClose, ExtractFileName
-│   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR flag handling, ExtractFileName flag checks
+│   ├── test_uncovered.cpp   # LogCallStack, EnsureInitialized, Scaling, sBinkClose, sBinkPause, sBinkGoto, sBinkSetVolume2, sBinkSetSoundOnOff, ExtractFileName
+│   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR flag handling, ExtractNameFromCCFileClass
 │   ├── test_corrupt_data.cpp # Negative tests for malformed .mix, .bik, .wav, config
 │   ├── test_config_parser.cpp
 │   ├── test_audio_decoder.cpp

@@ -500,10 +500,10 @@ TEST_F(ConfigParserTest, FindWavForBikNullMixName) {
     );
     LoadAudioConfig();
 
-    // With NULL mixName, should fall through to [audio]
+    // With NULL mixName (BINKIOPROCESSOR mode), search all exception sections
     const char* result = FindWavForBik("a01.bik", NULL);
     ASSERT_NE(result, (const char*)NULL);
-    EXPECT_STREQ(result, "audio.wav");
+    EXPECT_STREQ(result, "exception.wav");
 }
 
 TEST_F(ConfigParserTest, FindWavForBikWrongMixName) {
