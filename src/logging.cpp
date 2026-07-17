@@ -85,7 +85,7 @@ void Log(const char* msg) {
             DWORD bw;
             char header[256];
             _snprintf_s(header, sizeof(header), _TRUNCATE,
-                "=== Proxy_Bink32w v2.0.1 ===\r\n"
+                "=== Proxy_Bink32w v2.0.2 ===\r\n"
                 "Target: %s\r\n"
                 "\r\n",
                 BINK_REAL_DLL);

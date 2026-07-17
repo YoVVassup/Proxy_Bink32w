@@ -19,7 +19,7 @@
 // ============================================================================
 
 // ============================================================================
-// Proxy_Bink32w v2.0.1 — Bink Video API Proxy DLL
+// Proxy_Bink32w v2.0.2 — Bink Video API Proxy DLL
 //
 // Drop-in binkw32.dll replacement that intercepts Bink video API calls.
 // Features: audio replacement (.bik -> .wav), .mix archive parsing,
@@ -47,24 +47,19 @@ void EnsureInitialized() {
         if (LoadDll()) {
             InterlockedExchange(&g_initState, 2);
         } else {
-            InterlockedExchange(&g_initState, 0);
+            InterlockedExchange(&g_initState, 3);
         }
-    } else {
-        while (g_initState != 2) {
-            if (g_initState == 0) {
-                if (InterlockedCompareExchange(&g_initState, 1, 0) == 0) {
-                    LoadAudioConfig();
-                    if (LoadDll()) {
-                        InterlockedExchange(&g_initState, 2);
-                    } else {
-                        InterlockedExchange(&g_initState, 0);
-                    }
-                    return;
-                }
-            }
+    } else if (prev == 1) {
+        int retries = 0;
+        while (g_initState == 1 && retries < 100) {
             SwitchToThread();
+            retries++;
+        }
+        if (g_initState == 1) {
+            InterlockedExchange(&g_initState, 3);
         }
     }
+    // state 3 = failed, state 2 = ready
 }
 
 // Function pointers to real Bink DLL functions, resolved by ordinal at load time
@@ -233,15 +228,39 @@ static BOOL LoadDll() {
     if (!slash) return FALSE;
     *(slash + 1) = 0;
 
+    // Try primary DLL first
     char dllPath[MAX_PATH];
-    _snprintf_s(dllPath, sizeof(dllPath), _TRUNCATE, "%s" BINK_REAL_DLL, exePath);
-
+    _snprintf_s(dllPath, sizeof(dllPath), _TRUNCATE, "%s%s", exePath, BINK_REAL_DLL);
     g_hR = LoadLibraryA(dllPath);
+    if (g_hR) {
+        LogF("Real DLL loaded: %s", dllPath);
+    }
+#ifdef BINK_COMPAT_DLLS
+    else {
+        // Parse comma-separated list of compatible DLLs
+        char compatBuf[512];
+        strncpy_s(compatBuf, sizeof(compatBuf), BINK_COMPAT_DLLS, _TRUNCATE);
+        char* ctx = NULL;
+        char* token = strtok_s(compatBuf, ",", &ctx);
+        while (token) {
+            // Skip primary (already tried)
+            if (_stricmp(token, BINK_REAL_DLL) != 0) {
+                _snprintf_s(dllPath, sizeof(dllPath), _TRUNCATE, "%s%s", exePath, token);
+                g_hR = LoadLibraryA(dllPath);
+                if (g_hR) {
+                    LogF("Real DLL loaded (compat): %s", dllPath);
+                    break;
+                }
+            }
+            token = strtok_s(NULL, ",", &ctx);
+        }
+    }
+#endif
+
     if (!g_hR) {
-        LogF("FAILED to load real DLL: %s (error %lu)", dllPath, GetLastError());
+        LogF("FAILED to load any real DLL from %s", exePath);
         return FALSE;
     }
-    LogF("Real DLL loaded: %s", dllPath);
 
     for (int i = 0; i < (int)BINK_ORDINAL_COUNT; i++) {
         *BINK_ORDINAL_TABLE[i].dest = (void*)GetProcAddress(g_hR, (LPCSTR)BINK_ORDINAL_TABLE[i].ordinal);
@@ -289,6 +308,7 @@ void TrackVideo(void* h, const char* bikPath, const char* mixName) {
         g_vids[g_vidCount].scaleTableH = 0;
         g_vids[g_vidCount].wavPath[0] = '\0';
         g_vids[g_vidCount].wavPlayer = NULL;
+        g_vids[g_vidCount].wavStarted = false;
 
         BinkFileInfo bfi = {0};
         bfi.width = w;
@@ -300,15 +320,7 @@ void TrackVideo(void* h, const char* bikPath, const char* mixName) {
         const char* wav = FindWavForBik(bikPath, mixName);
         if (wav) {
             strncpy_s(g_vids[g_vidCount].wavPath, sizeof(g_vids[g_vidCount].wavPath), wav, _TRUNCATE);
-            LogF("Audio replacement: %s [%ux%u] -> %s", bikPath ? bikPath : "?", w, hv, wav);
-
-            WavPlayer* pl = AllocPlayer();
-            if (pl && WavPlayerStart(pl, wav)) {
-                g_vids[g_vidCount].wavPlayer = pl;
-            } else {
-                if (pl) FreePlayer(pl);
-                LogF("Failed to start WAV playback for %s", bikPath ? bikPath : "?");
-            }
+            LogF("Audio replacement queued: %s [%ux%u] -> %s", bikPath ? bikPath : "?", w, hv, wav);
         } else {
             LogF("No audio mapping for: %s [%ux%u]", bikPath ? bikPath : "?", w, hv);
         }
@@ -634,7 +646,8 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
                 strncpy_s(extractedName, sizeof(extractedName), bikInternal, _TRUNCATE);
                 bikName = extractedName;
             } else {
-                bikName = mixPath;
+                strncpy_s(extractedName, sizeof(extractedName), mixPath, _TRUNCATE);
+                bikName = extractedName;
             }
         }
 
@@ -643,14 +656,18 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
         // Only treat 'a' as filename string when no special flag is set.
         // BINK_FROM_MEMORY (0x04000000): 'a' is a memory buffer pointer
         // BINKIOPROCESSOR (0x02000000): 'a' is a custom IO context (e.g. CCFileClass*)
-        bikName = (char*)a;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery(a, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
+            (mbi.State & MEM_COMMIT) && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            bikName = (char*)a;
+        }
     }
 
     intptr_t r = p ? ((intptr_t(__stdcall*)(void*,void*))p)(a, b) : 0;
     LogF("BinkOpen->%p", (void*)r);
     if (r) {
-        if (bikName[0]) LogF("BinkOpen resolved: %s", bikName);
-        TrackVideo((void*)r, bikName[0] ? bikName : NULL, mixFileName[0] ? mixFileName : NULL);
+        if (bikName && bikName[0]) LogF("BinkOpen resolved: %s", bikName);
+        TrackVideo((void*)r, (bikName && bikName[0]) ? bikName : NULL, mixFileName[0] ? mixFileName : NULL);
     }
     return r;
 }
@@ -662,10 +679,10 @@ intptr_t __stdcall sBinkOpenWithOptions(void* a, void* b, void* c) {
     intptr_t r = p ? ((intptr_t(__stdcall*)(void*,void*,void*))p)(a, b, c) : 0;
     LogF("BinkOpenWithOptions->%p", (void*)r);
     if (r && a) {
-        const char* name = (const char*)a;
         MEMORY_BASIC_INFORMATION mbi;
         if (VirtualQuery(a, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
             (mbi.State & MEM_COMMIT) && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            const char* name = (const char*)a;
             TrackVideo((void*)r, name[0] ? name : NULL, NULL);
         } else {
             TrackVideo((void*)r, NULL, NULL);
@@ -677,6 +694,21 @@ intptr_t __stdcall sBinkOpenWithOptions(void* a, void* b, void* c) {
 void __stdcall sBinkDoFrame(void* a) {
     void* p = pBinkDoFrame;
     if (g_logWait) LogF("BinkDoFrame(%p)", a);
+
+    VideoInfo* vi = FindVideo(a);
+    if (vi && !vi->wavStarted && vi->wavPath[0]) {
+        WavPlayer* pl = AllocPlayer();
+        if (pl && WavPlayerStart(pl, vi->wavPath)) {
+            vi->wavPlayer = pl;
+            vi->wavStarted = true;
+            LogF("Audio playback started: %s", vi->wavPath);
+        } else {
+            if (pl) FreePlayer(pl);
+            vi->wavStarted = true;
+            LogF("Failed to start WAV playback for %s", vi->wavPath);
+        }
+    }
+
     if (p) ((void(__stdcall*)(void*))p)(a);
 }
 
@@ -812,7 +844,8 @@ intptr_t __stdcall sBinkCopyToBuffer(void* a, void* b, void* c, void* d, void* e
                         a, vi->tempBuf, (void*)(intptr_t)srcPitch,
                         (void*)(intptr_t)srcH, (void*)0, (void*)0, g);
 
-                    if (vi->scaleLookupX && vi->scaleLookupY) {
+                    if (vi->scaleLookupX && vi->scaleLookupY &&
+                        vi->scaleTableW == scaleW && vi->scaleTableH == scaleH) {
                         for (int y = 0; y < scaleH; y++) {
                             int sy = vi->scaleLookupY[y];
                             const uint16_t* srcLine = (const uint16_t*)((const uint8_t*)vi->tempBuf + (SIZE_T)sy * srcPitch);
@@ -912,7 +945,7 @@ void __stdcall sBinkSetSoundOnOff(void* a, void* b) {
     void* p = pBinkSetSoundOnOff;
     int on = (int)(intptr_t)b;
     VideoInfo* vi = FindVideo(a);
-    if (vi && vi->wavPlayer && on) {
+    if (vi && vi->wavPath[0] && on) {
         LogF("BinkSetSoundOnOff: muted (WAV replacement active)");
         if (p) ((void(__stdcall*)(void*,void*))p)(a, (void*)0);
         return;
@@ -938,7 +971,7 @@ void __stdcall sBinkSetSoundOnOff(void* a, void* b) {
 void __stdcall sBinkSetVolume2(void* a, void* b) {
     void* p = pBinkSetVolume;
     VideoInfo* vi = FindVideo(a);
-    if (vi && vi->wavPlayer) {
+    if (vi && vi->wavPath[0]) {
         LogF("BinkSetVolume2: muted (WAV replacement active)");
 #ifdef BINK_HAS_VOLUME_12
         if (p) ((void(__stdcall*)(void*,void*,void*))p)(a, (void*)0, (void*)0);
@@ -958,7 +991,7 @@ void __stdcall sBinkSetVolume2(void* a, void* b) {
 void __stdcall sBinkSetPan(void* a, void* b, void* c) {
     void* p = pBinkSetPan;
     VideoInfo* vi = FindVideo(a);
-    if (vi && vi->wavPlayer) {
+    if (vi && vi->wavPath[0]) {
         LogF("BinkSetPan: muted (WAV replacement active)");
         return;
     }

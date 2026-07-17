@@ -133,14 +133,16 @@ function(add_bink_proxy TARGET_NAME BINK_GROUP_NUM REAL_DLL_NAME REAL_DLLS DEF_F
         ${DEF_FILE} src/version_info.rc
     )
     set_target_properties(${TARGET_NAME} PROPERTIES
-        OUTPUT_NAME "binkw32" MODULE_PREFIX "" VERSION "2.0.1.0" SOVERSION "2"
+        OUTPUT_NAME "binkw32" MODULE_PREFIX "" VERSION "2.0.2.0" SOVERSION "2"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/GROUP_${BINK_GROUP_NUM}"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/GROUP_${BINK_GROUP_NUM}"
     )
+    # Convert semicolon list to comma-separated for C macro
+    string(REPLACE ";" "," _compat_csv "${REAL_DLLS}")
     if(MSVC)
-        target_compile_options(${TARGET_NAME} PRIVATE /W3 /WX- /DBINK_GROUP_${BINK_GROUP_NUM} /DBINK_REAL_DLL="${REAL_DLL_NAME}")
+        target_compile_options(${TARGET_NAME} PRIVATE /W3 /WX- /DBINK_GROUP_${BINK_GROUP_NUM} /DBINK_REAL_DLL="${REAL_DLL_NAME}" /DBINK_COMPAT_DLLS="${_compat_csv}")
     else()
-        target_compile_options(${TARGET_NAME} PRIVATE -Wall -Wextra -Wno-unused-parameter -DBINK_GROUP_${BINK_GROUP_NUM} -DBINK_REAL_DLL="${REAL_DLL_NAME}")
+        target_compile_options(${TARGET_NAME} PRIVATE -Wall -Wextra -Wno-unused-parameter -DBINK_GROUP_${BINK_GROUP_NUM} -DBINK_REAL_DLL="${REAL_DLL_NAME}" -DBINK_COMPAT_DLLS="${_compat_csv}")
     endif()
     target_link_libraries(${TARGET_NAME} PRIVATE kernel32 user32 winmm)
 

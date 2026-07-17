@@ -32,6 +32,7 @@ extern "C" {
     void __stdcall sBinkGoto(void* a, void* b, void* c);
     void __stdcall sBinkSetVolume2(void* a, void* b);
     void __stdcall sBinkSetSoundOnOff(void* a, void* b);
+    void __stdcall sBinkSetPan(void* a, void* b, void* c);
 }
 
 // --- Mock BinkGetSummary callback type ---
@@ -49,6 +50,7 @@ extern void* pBinkGoto;
 extern void* pBinkWait;
 extern void* pBinkPause;
 extern void* pBinkSetSoundOnOff;
+extern void* pBinkSetWillLoop;
 
 // --- Functions under test (from config.cpp) ---
 // MixCrc32 and ReadU32/ReadU16 are already accessible via the header.

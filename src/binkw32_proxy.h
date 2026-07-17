@@ -102,6 +102,7 @@ struct VideoInfo {
     int scaleTableH;
     char wavPath[MAX_PATH];
     WavPlayer* wavPlayer;
+    bool wavStarted;
 };
 
 // ============================================================================

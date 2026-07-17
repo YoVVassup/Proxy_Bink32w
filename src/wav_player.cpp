@@ -146,6 +146,12 @@ BOOL WavPlayerStart(WavPlayer* pl, const char* audioPath) {
 
     pl->bufSize = pl->format.nAvgBytesPerSec / 2;
     if (pl->bufSize < 4096) pl->bufSize = 4096;
+    if (pl->format.nAvgBytesPerSec == 0 || pl->format.nBlockAlign == 0) {
+        LogF("Invalid audio format: nAvgBytesPerSec=%u nBlockAlign=%u",
+             pl->format.nAvgBytesPerSec, pl->format.nBlockAlign);
+        WavPlayerStop(pl);
+        return FALSE;
+    }
 
     pl->preparedCount = 0;
     for (int i = 0; i < 4; i++) {
@@ -263,5 +269,6 @@ void WavPlayerSeek(WavPlayer* pl, DWORD sampleOffset) {
         waveOutWrite(pl->hWave, &pl->headers[i], sizeof(WAVEHDR));
     }
     pl->playing = TRUE;
+    pl->paused = FALSE;
     LeaveCriticalSection(&pl->cs);
 }

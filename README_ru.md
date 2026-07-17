@@ -3,7 +3,7 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-295%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-306%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -68,12 +68,12 @@ build_tests\tests\Release\binkw32w_tests.exe
 
 ### 📈 Покрытие тестами
 
-295 тестов в 38 тестовом сьюте, покрывающих все основные модули:
+306 тестов в 41 тестовом сьюте, покрывающих все основные модули:
 
 | Модуль | Тестов | Покрытие |
 |--------|--------|----------|
 | config.cpp (CRC32, парсер .mix, заголовки .bik, декодер .wav, парсер конфига) | 78 | 100% |
-| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, жизненный цикл DLL, ExtractFileName, BINKIOPROCESSOR, CCFileClass) | 78 | 100% |
+| binkw32_proxy.cpp (TrackVideo, UntrackVideo, FindVideo, scaling, жизненный цикл DLL, ExtractFileName, BINKIOPROCESSOR, CCFileClass, BinkSetPan, BinkSetWillLoop, BinkWait) | 89 | 100% |
 | wav_player.cpp (alloc, free, start, stop, pause, resume, seek) | 35 | 100% |
 | logging.cpp (Log, LogF, TrimRight) | 13 | 100% |
 | audio_decoder.cpp (WAV, OGG, негативные тесты) | 21 | 100% |
@@ -326,7 +326,7 @@ Proxy_Bink32w/
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test suite (295 тестов, 38 сьютов)
+├── tests/                   # Google Test suite (306 тестов, 41 сьют)
 │   ├── test_proxy_core.cpp  # TrackVideo, UntrackVideo, FindVideo
 │   ├── test_uncovered.cpp   # LogCallStack, EnsureInitialized, Scaling, sBinkClose, sBinkPause, sBinkGoto, sBinkSetVolume2, sBinkSetSoundOnOff, ExtractFileName
 │   ├── test_binkioprocessor.cpp # Обработка флага BINKIOPROCESSOR, ExtractNameFromCCFileClass

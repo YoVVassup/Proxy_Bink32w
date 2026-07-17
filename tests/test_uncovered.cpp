@@ -750,6 +750,7 @@ protected:
         TrackVideo(handle, "test.bik", NULL);
         VideoInfo* vi = FindVideo(handle);
         if (!vi) return NULL;
+        strncpy_s(vi->wavPath, sizeof(vi->wavPath), "test.wav", _TRUNCATE);
         WavPlayer* pl = AllocPlayer();
         if (!pl) return NULL;
         vi->wavPlayer = pl;
@@ -836,6 +837,7 @@ protected:
         TrackVideo(handle, "test.bik", NULL);
         VideoInfo* vi = FindVideo(handle);
         if (!vi) return NULL;
+        strncpy_s(vi->wavPath, sizeof(vi->wavPath), "test.wav", _TRUNCATE);
         WavPlayer* pl = AllocPlayer();
         if (!pl) return NULL;
         vi->wavPlayer = pl;
@@ -886,4 +888,218 @@ TEST_F(SBinkSetSoundOnOffTest, MutesAlwaysZero) {
 
     sBinkSetSoundOnOff(handle, (void*)1);
     EXPECT_EQ(g_setSoundOnOffArg, (void*)0);
+}
+
+// ============================================================================
+// sBinkSetPan tests
+// ============================================================================
+
+int g_setPanCalled = 0;
+void* g_setPanHandle = NULL;
+void* g_setPanArg1 = NULL;
+void* g_setPanArg2 = NULL;
+
+#ifdef BINK_HAS_PAN_12
+void __stdcall MockSetPan(void* a, void* b, void* c) {
+    g_setPanCalled++;
+    g_setPanHandle = a;
+    g_setPanArg1 = b;
+    g_setPanArg2 = c;
+}
+#else
+void __stdcall MockSetPan(void* a, void* b) {
+    g_setPanCalled++;
+    g_setPanHandle = a;
+    g_setPanArg1 = b;
+    g_setPanArg2 = NULL;
+}
+#endif
+
+class SBinkSetPanTest : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedPan;
+    int savedCount;
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedPan = pBinkSetPan;
+        savedCount = g_vidCount;
+
+        pBinkGetSummary = (void*)MockSummary;
+        pBinkSetPan = (void*)MockSetPan;
+        g_vidCount = 0;
+        g_setPanCalled = 0;
+        g_setPanHandle = NULL;
+        g_setPanArg1 = NULL;
+        g_setPanArg2 = NULL;
+        g_mW = 640;
+        g_mH = 480;
+        g_mFR = 30;
+        g_mFRD = 1;
+    }
+
+    void TearDown() override {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].wavPlayer) {
+                FreePlayer(g_vids[i].wavPlayer);
+                g_vids[i].wavPlayer = NULL;
+            }
+        }
+        pBinkGetSummary = savedSummary;
+        pBinkSetPan = savedPan;
+        g_vidCount = savedCount;
+    }
+
+    WavPlayer* SetupVideoWithPlayer(void* handle) {
+        TrackVideo(handle, "test.bik", NULL);
+        VideoInfo* vi = FindVideo(handle);
+        if (!vi) return NULL;
+        strncpy_s(vi->wavPath, sizeof(vi->wavPath), "test.wav", _TRUNCATE);
+        WavPlayer* pl = AllocPlayer();
+        if (!pl) return NULL;
+        vi->wavPlayer = pl;
+        pl->hWave = (HWAVEOUT)0x12345678;
+        pl->playing = TRUE;
+        return pl;
+    }
+};
+
+TEST_F(SBinkSetPanTest, MutesWithReplacement) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetPan(handle, (void*)100, (void*)200);
+    EXPECT_EQ(g_setPanCalled, 0);
+}
+
+TEST_F(SBinkSetPanTest, ForwardsWithoutReplacement) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    sBinkSetPan(handle, (void*)100, (void*)200);
+    EXPECT_EQ(g_setPanCalled, 1);
+    EXPECT_EQ(g_setPanHandle, handle);
+    EXPECT_EQ(g_setPanArg1, (void*)100);
+}
+
+TEST_F(SBinkSetPanTest, UnknownHandleForwards) {
+    sBinkSetPan((void*)0x9999, (void*)100, (void*)200);
+    EXPECT_EQ(g_setPanCalled, 1);
+    EXPECT_EQ(g_setPanArg1, (void*)100);
+}
+
+TEST_F(SBinkSetPanTest, ForwardsNullArgs) {
+    sBinkSetPan(NULL, NULL, NULL);
+    EXPECT_EQ(g_setPanCalled, 1);
+}
+
+// ============================================================================
+// sBinkSetWillLoop tests
+// ============================================================================
+
+int g_setWillLoopCalled = 0;
+void* g_setWillLoopHandle = NULL;
+void* g_setWillLoopArg = NULL;
+
+void __stdcall MockSetWillLoop(void* a, void* b) {
+    g_setWillLoopCalled++;
+    g_setWillLoopHandle = a;
+    g_setWillLoopArg = b;
+}
+
+class SBinkSetWillLoopTest : public ::testing::Test {
+protected:
+    void* savedWillLoop;
+
+    void SetUp() override {
+        savedWillLoop = pBinkSetWillLoop;
+        pBinkSetWillLoop = (void*)MockSetWillLoop;
+        g_setWillLoopCalled = 0;
+        g_setWillLoopHandle = NULL;
+        g_setWillLoopArg = NULL;
+    }
+
+    void TearDown() override {
+        pBinkSetWillLoop = savedWillLoop;
+    }
+};
+
+TEST_F(SBinkSetWillLoopTest, ForwardsToReal) {
+    sBinkSetWillLoop((void*)0x1000, (void*)1);
+    EXPECT_EQ(g_setWillLoopCalled, 1);
+    EXPECT_EQ(g_setWillLoopHandle, (void*)0x1000);
+    EXPECT_EQ(g_setWillLoopArg, (void*)1);
+}
+
+TEST_F(SBinkSetWillLoopTest, ForwardsZeroArg) {
+    sBinkSetWillLoop((void*)0x2000, (void*)0);
+    EXPECT_EQ(g_setWillLoopCalled, 1);
+    EXPECT_EQ(g_setWillLoopArg, (void*)0);
+}
+
+TEST_F(SBinkSetWillLoopTest, NullPtrFunction) {
+    pBinkSetWillLoop = NULL;
+    sBinkSetWillLoop((void*)0x1000, (void*)1);
+    EXPECT_EQ(g_setWillLoopCalled, 0);
+}
+
+// ============================================================================
+// sBinkWait tests
+// ============================================================================
+
+int g_waitCalled = 0;
+void* g_waitHandle = NULL;
+intptr_t g_waitReturnVal = 0;
+
+intptr_t __stdcall MockWait(void* a) {
+    g_waitCalled++;
+    g_waitHandle = a;
+    return g_waitReturnVal;
+}
+
+class SBinkWaitTest : public ::testing::Test {
+protected:
+    void* savedWait;
+
+    void SetUp() override {
+        savedWait = pBinkWait;
+        pBinkWait = (void*)MockWait;
+        g_waitCalled = 0;
+        g_waitHandle = NULL;
+        g_waitReturnVal = 0;
+    }
+
+    void TearDown() override {
+        pBinkWait = savedWait;
+    }
+};
+
+TEST_F(SBinkWaitTest, ForwardsToReal) {
+    g_waitReturnVal = 0;
+    intptr_t r = sBinkWait((void*)0x1000);
+    EXPECT_EQ(g_waitCalled, 1);
+    EXPECT_EQ(g_waitHandle, (void*)0x1000);
+    EXPECT_EQ(r, (intptr_t)0);
+}
+
+TEST_F(SBinkWaitTest, ReturnsNonZero) {
+    g_waitReturnVal = 1;
+    intptr_t r = sBinkWait((void*)0x2000);
+    EXPECT_EQ(r, (intptr_t)1);
+}
+
+TEST_F(SBinkWaitTest, NullPtrFunction) {
+    pBinkWait = NULL;
+    intptr_t r = sBinkWait((void*)0x1000);
+    EXPECT_EQ(g_waitCalled, 0);
+    EXPECT_EQ(r, (intptr_t)0);
+}
+
+TEST_F(SBinkWaitTest, MultipleCalls) {
+    g_waitReturnVal = 0;
+    sBinkWait((void*)0x1000);
+    sBinkWait((void*)0x1000);
+    sBinkWait((void*)0x1000);
+    EXPECT_EQ(g_waitCalled, 3);
 }
