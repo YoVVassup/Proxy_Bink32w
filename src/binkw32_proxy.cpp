@@ -613,10 +613,25 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
 
     if (flags & 0x02000000) {
         LogF("BinkOpen: BINKIOPROCESSOR mode, first param=%p (custom IO context)", a);
-        if (ExtractNameFromCCFileClass(a, extractedName, sizeof(extractedName))) {
-            bikName = extractedName;
-        } else {
-            LogF("BINKIOPROCESSOR: could not extract filename from %p — audio replacement disabled", a);
+
+        // Try to get .bik filename from IHCore's exported function
+        HMODULE ihCore = GetModuleHandleA("IHCore.dll");
+        if (ihCore) {
+            typedef const char* (__stdcall *GetBikNameFn)();
+            GetBikNameFn fn = (GetBikNameFn)GetProcAddress(ihCore, "ExtBink_GetCurrentBikName");
+            if (fn) {
+                const char* name = fn();
+                if (name && name[0]) {
+                    strncpy_s(extractedName, sizeof(extractedName), name, _TRUNCATE);
+                    bikName = extractedName;
+                    LogF("BINKIOPROCESSOR: resolved filename from IHCore: %s", bikName);
+                }
+            }
+        }
+
+        if (!bikName[0]) {
+            ExtractNameFromCCFileClass(a, extractedName, sizeof(extractedName));
+            if (extractedName[0]) bikName = extractedName;
         }
     }
 
