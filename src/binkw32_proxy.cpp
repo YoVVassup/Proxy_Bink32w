@@ -19,6 +19,13 @@
 // ============================================================================
 
 // ============================================================================
+// Bink 1.x open flags (used in sBinkOpen and ExtractFileName)
+// ============================================================================
+constexpr DWORD BINK_FLAG_FILEHANDLE  = 0x00800000; // 'a' is a HANDLE
+constexpr DWORD BINK_FLAG_IOPROCESSOR = 0x02000000; // 'a' is custom IO context
+constexpr DWORD BINK_FLAG_FROM_MEMORY = 0x04000000; // 'a' is memory buffer pointer
+
+// ============================================================================
 // Proxy_Bink32w v2.0.2 — Bink Video API Proxy DLL
 //
 // Drop-in binkw32.dll replacement that intercepts Bink video API calls.
@@ -28,19 +35,23 @@
 
 // Handle to the real Bink DLL loaded at runtime
 static HMODULE g_hR = NULL;
+#ifdef BINK_TEST_BUILD
+LONG g_initState = 0;
+#else
 static LONG g_initState = 0;
+#endif
 
 static BOOL LoadDll();
 
 // Deferred initialization — called from sBinkOpen/sBinkOpenWithOptions
 // instead of DllMain to avoid LoadLibrary + I/O under loader lock.
 #ifdef BINK_TEST_BUILD
-void EnsureInitialized();
+BOOL EnsureInitialized();
 #else
-static void EnsureInitialized();
+static BOOL EnsureInitialized();
 #endif
 
-void EnsureInitialized() {
+BOOL EnsureInitialized() {
     LONG prev = InterlockedCompareExchange(&g_initState, 1, 0);
     if (prev == 0) {
         LoadAudioConfig();
@@ -59,7 +70,7 @@ void EnsureInitialized() {
             InterlockedExchange(&g_initState, 3);
         }
     }
-    // state 3 = failed, state 2 = ready
+    return g_initState == 2;
 }
 
 // Function pointers to real Bink DLL functions, resolved by ordinal at load time
@@ -280,7 +291,7 @@ int g_vidCount = 0;
 
 void TrackVideo(void* h, const char* bikPath, const char* mixName) {
     if (!h || !pBinkGetSummary) return;
-    unsigned char summary[1024];
+    unsigned char summary[128];
     memset(summary, 0, sizeof(summary));
     ((void(__stdcall*)(void*, void*))pBinkGetSummary)(h, summary);
     uint32_t w = ReadU32(summary);
@@ -310,17 +321,23 @@ void TrackVideo(void* h, const char* bikPath, const char* mixName) {
         g_vids[g_vidCount].wavPlayer = NULL;
         g_vids[g_vidCount].wavStarted = false;
 
-        BinkFileInfo bfi = {0};
-        bfi.width = w;
-        bfi.height = hv;
-        bfi.frameRate = frameRate;
-        bfi.frameRateDiv = frameRateDiv;
-        bfi.valid = TRUE;
-
         const char* wav = FindWavForBik(bikPath, mixName);
         if (wav) {
-            strncpy_s(g_vids[g_vidCount].wavPath, sizeof(g_vids[g_vidCount].wavPath), wav, _TRUNCATE);
-            LogF("Audio replacement queued: %s [%ux%u] -> %s", bikPath ? bikPath : "?", w, hv, wav);
+            // Verify the replacement file actually exists before committing to it.
+            // If the file is missing, skip the replacement and let original audio play.
+            char fullWavPath[MAX_PATH];
+            if (wav[1] == ':' || (wav[0] == '\\' && wav[1] == '\\')) {
+                strncpy_s(fullWavPath, sizeof(fullWavPath), wav, _TRUNCATE);
+            } else {
+                _snprintf_s(fullWavPath, sizeof(fullWavPath), _TRUNCATE, "%s%s", g_dllDir, wav);
+            }
+            DWORD attr = GetFileAttributesA(fullWavPath);
+            if (attr != INVALID_FILE_ATTRIBUTES) {
+                strncpy_s(g_vids[g_vidCount].wavPath, sizeof(g_vids[g_vidCount].wavPath), wav, _TRUNCATE);
+                LogF("Audio replacement queued: %s [%ux%u] -> %s", bikPath ? bikPath : "?", w, hv, wav);
+            } else {
+                LogF("Replacement file not found, using original audio: %s (looked for %s)", wav, fullWavPath);
+            }
         } else {
             LogF("No audio mapping for: %s [%ux%u]", bikPath ? bikPath : "?", w, hv);
         }
@@ -376,7 +393,7 @@ static void ExtractFileName(void* a, DWORD flags, char* out, int outSize) {
 #endif
     out[0] = '\0';
 
-    if (flags & 0x00800000) {
+    if (flags & BINK_FLAG_FILEHANDLE) {
         HANDLE hFile = (HANDLE)(intptr_t)a;
         char pathBuf[MAX_PATH];
         DWORD len = GetFinalPathNameByHandleA(hFile, pathBuf, MAX_PATH, FILE_NAME_NORMALIZED);
@@ -390,11 +407,11 @@ static void ExtractFileName(void* a, DWORD flags, char* out, int outSize) {
         return;
     }
 
-    if (flags & 0x04000000) {
+    if (flags & BINK_FLAG_FROM_MEMORY) {
         return;
     }
 
-    if (flags & 0x02000000) {
+    if (flags & BINK_FLAG_IOPROCESSOR) {
         return;
     }
 
@@ -602,7 +619,10 @@ intptr_t __stdcall sBinkGetError() {
 }
 
 intptr_t __stdcall sBinkOpen(void* a, void* b) {
-    EnsureInitialized();
+    if (!EnsureInitialized()) {
+        LogF("BinkOpen: initialization failed, returning NULL");
+        return 0;
+    }
     void* p = pBinkOpen;
     DWORD flags = (DWORD)(intptr_t)b;
     LogF("BinkOpen(%p,%p) flags=0x%08X ptr=%p", a, b, flags, p);
@@ -611,7 +631,7 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
     char mixFileName[MAX_PATH] = "";
     char* bikName = extractedName;
 
-    if (flags & 0x02000000) {
+    if (flags & BINK_FLAG_IOPROCESSOR) {
         LogF("BinkOpen: BINKIOPROCESSOR mode, first param=%p (custom IO context)", a);
 
         // Try to get .bik filename from IHCore's exported function
@@ -635,7 +655,7 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
         }
     }
 
-    if (flags & 0x00800000) {
+    if (flags & BINK_FLAG_FILEHANDLE) {
         HANDLE hFile = (HANDLE)(intptr_t)a;
         DWORD pos = SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
         BinkFileInfo bfi = ReadBinkHeaderFromFile(hFile);
@@ -667,10 +687,10 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
         }
 
         LogCallStack(1);
-    } else if (a && !(flags & 0x04000000) && !(flags & 0x02000000)) {
+    } else if (a && !(flags & BINK_FLAG_FROM_MEMORY) && !(flags & BINK_FLAG_IOPROCESSOR)) {
         // Only treat 'a' as filename string when no special flag is set.
-        // BINK_FROM_MEMORY (0x04000000): 'a' is a memory buffer pointer
-        // BINKIOPROCESSOR (0x02000000): 'a' is a custom IO context (e.g. CCFileClass*)
+        // BINK_FLAG_FROM_MEMORY: 'a' is a memory buffer pointer
+        // BINK_FLAG_IOPROCESSOR: 'a' is a custom IO context (e.g. CCFileClass*)
         MEMORY_BASIC_INFORMATION mbi;
         if (VirtualQuery(a, &mbi, sizeof(mbi)) >= sizeof(mbi) &&
             (mbi.State & MEM_COMMIT) && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
@@ -688,7 +708,10 @@ intptr_t __stdcall sBinkOpen(void* a, void* b) {
 }
 
 intptr_t __stdcall sBinkOpenWithOptions(void* a, void* b, void* c) {
-    EnsureInitialized();
+    if (!EnsureInitialized()) {
+        LogF("BinkOpenWithOptions: initialization failed, returning NULL");
+        return 0;
+    }
     void* p = pBinkOpenWithOptions;
     LogF("BinkOpenWithOptions(%p,%p,%p)", a, b, c);
     intptr_t r = p ? ((intptr_t(__stdcall*)(void*,void*,void*))p)(a, b, c) : 0;
@@ -832,6 +855,15 @@ intptr_t __stdcall sBinkCopyToBuffer(void* a, void* b, void* c, void* d, void* e
                             (void*)(intptr_t)srcH, (void*)0, (void*)0, g);
                     }
 
+                    // Validate destination buffer bounds before writing
+                    if (offX < 0 || offY < 0 || offX + scaleW > dstW || offY + scaleH > dstHeight) {
+                        LogF("sBinkCopyToBuffer: dest overflow averted (offX=%d offY=%d scaleW=%d scaleH=%d dstW=%d dstH=%d)",
+                             offX, offY, scaleW, scaleH, dstW, dstHeight);
+                        return ((intptr_t(__stdcall*)(void*,void*,void*,void*,void*,void*,void*))p)(
+                            a, vi->tempBuf, (void*)(intptr_t)srcPitch,
+                            (void*)(intptr_t)srcH, (void*)0, (void*)0, g);
+                    }
+
                     if (vi->scaleTableW != scaleW || vi->scaleTableH != scaleH) {
                         int* newX = (int*)malloc(scaleW * sizeof(int));
                         int* newY = (int*)malloc(scaleH * sizeof(int));
@@ -904,7 +936,7 @@ void __stdcall sBinkGoto(void* a, void* b, void* c) {
     VideoInfo* vi = FindVideo(a);
     if (vi && vi->wavPlayer && vi->height > 0) {
         if (pBinkGetSummary) {
-            unsigned char summary[1024];
+            unsigned char summary[128];
             memset(summary, 0, sizeof(summary));
             ((void(__stdcall*)(void*, void*))pBinkGetSummary)(a, summary);
             uint32_t fr = ReadU32(summary + 20);
@@ -1416,127 +1448,55 @@ void __stdcall sradfree(void* a) {
 }
 
 // ============================================================================
-// YUV blit proxy stubs
+// YUV blit proxy stubs — generated via macro to eliminate boilerplate
+//
+// Two variants: 12-arg (no extra param) and 13-arg (with unused/mask param).
+// Each stub: fetch function pointer, forward all args if non-NULL.
 // ============================================================================
+
+#define YUV_BLIT_12(name) \
+void __stdcall s##name(void* a, void* b, void* c, void* d, void* e, void* f, \
+    void* g, void* h, void* i, void* j, void* k, void* l) { \
+    void* p = p##name; \
+    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*, \
+        void*,void*,void*,void*,void*,void*))p)(a,b,c,d,e,f,g,h,i,j,k,l); \
+}
+
+#define YUV_BLIT_13(name) \
+void __stdcall s##name(void* a, void* b, void* c, void* d, void* e, void* f, \
+    void* g, void* h, void* i, void* j, void* k, void* l, void* m) { \
+    void* p = p##name; \
+    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*, \
+        void*,void*,void*,void*,void*,void*,void*))p)(a,b,c,d,e,f,g,h,i,j,k,l,m); \
+}
 
 void __stdcall sYUV_init(void* a) {
     void* p = pYUV_init;
     if (p) ((void(__stdcall*)(void*))p)(a);
 }
 
-void __stdcall sYUV_blit_16a1bpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_16a1bpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_16a1bpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_16a1bpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_16a4bpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_16a4bpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_16a4bpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_16a4bpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_16bpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_16bpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_16bpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_16bpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_24bpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_24bpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_24bpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_24bpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_24rbpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_24rbpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_24rbpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_24rbpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_32abpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_32abpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_32abpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_32abpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_32bpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_32bpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_32bpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_32bpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_32rabpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_32rabpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_32rabpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_32rabpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
-
-void __stdcall sYUV_blit_32rbpp(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_32rbpp;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_32rbpp_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_32rbpp_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_UYVY(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_UYVY;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_UYVY_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_UYVY_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_YUY2(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_YUY2;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_YUY2_mask(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l) {
-    void* p = pYUV_blit_YUY2_mask;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l);
-}
-
-void __stdcall sYUV_blit_YV12(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m) {
-    void* p = pYUV_blit_YV12;
-    if (p) ((void(__stdcall*)(void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*,void*))p)(a, b, c, d, e, f, g, h, i, j, k, l, m);
-}
+YUV_BLIT_13(YUV_blit_16a1bpp)
+YUV_BLIT_13(YUV_blit_16a1bpp_mask)
+YUV_BLIT_13(YUV_blit_16a4bpp)
+YUV_BLIT_13(YUV_blit_16a4bpp_mask)
+YUV_BLIT_12(YUV_blit_16bpp)
+YUV_BLIT_12(YUV_blit_16bpp_mask)
+YUV_BLIT_12(YUV_blit_24bpp)
+YUV_BLIT_12(YUV_blit_24bpp_mask)
+YUV_BLIT_12(YUV_blit_24rbpp)
+YUV_BLIT_12(YUV_blit_24rbpp_mask)
+YUV_BLIT_13(YUV_blit_32abpp)
+YUV_BLIT_13(YUV_blit_32abpp_mask)
+YUV_BLIT_12(YUV_blit_32bpp)
+YUV_BLIT_12(YUV_blit_32bpp_mask)
+YUV_BLIT_13(YUV_blit_32rabpp)
+YUV_BLIT_13(YUV_blit_32rabpp_mask)
+YUV_BLIT_12(YUV_blit_32rbpp)
+YUV_BLIT_12(YUV_blit_32rbpp_mask)
+YUV_BLIT_12(YUV_blit_UYVY)
+YUV_BLIT_12(YUV_blit_UYVY_mask)
+YUV_BLIT_12(YUV_blit_YUY2)
+YUV_BLIT_12(YUV_blit_YUY2_mask)
+YUV_BLIT_13(YUV_blit_YV12)
 
 } /* extern "C" */

@@ -86,6 +86,9 @@ class WavPlayerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         g_mockState.Reset();
+        g_mockFailOpen = FALSE;
+        g_mockFailPrepare = FALSE;
+        g_mockFailWrite = FALSE;
         CreateTestWav();
         // Reset player pool
         for (int i = 0; i < MAX_WAV_PLAYERS; i++) {
@@ -535,4 +538,186 @@ TEST_F(WavPlayerTest, PlayerPoolAllocFreeCycle) {
         }
     }
     // No leak after 5 alloc/free cycles
+}
+
+// ============================================================================
+// Error injection tests
+// ============================================================================
+
+TEST_F(WavPlayerTest, WavPlayerStartFailsOnWaveOutOpenError) {
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    g_mockFailOpen = TRUE;
+
+    BOOL result = WavPlayerStart(pl, g_testWavPath);
+
+    EXPECT_FALSE(result);
+    EXPECT_EQ(pl->pcmData, (char*)NULL);
+    EXPECT_EQ(pl->hWave, (HWAVEOUT)NULL);
+}
+
+TEST_F(WavPlayerTest, WavPlayerStartFailsOnPrepareHeaderError) {
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    g_mockFailPrepare = TRUE;
+
+    BOOL result = WavPlayerStart(pl, g_testWavPath);
+
+    EXPECT_FALSE(result);
+    EXPECT_EQ(pl->hWave, (HWAVEOUT)NULL);
+}
+
+// ============================================================================
+// WaveOut callback tests (streaming refill)
+// ============================================================================
+
+TEST_F(WavPlayerTest, CallbackRefillsBuffer) {
+    // Create a large WAV (5 seconds = 220500 bytes PCM) so the initial
+    // 4-buffer fill (4 * 22050 = 88200 bytes) doesn't exhaust all data.
+    // The callback should refill a buffer and advance pcmPos.
+    char largePath[MAX_PATH];
+    char tempDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempDir);
+    _snprintf_s(largePath, sizeof(largePath), _TRUNCATE, "%s\\bink32w_large.wav", tempDir);
+
+    const int numSamples = 22050 * 5; // 5 seconds at 22050 Hz
+    int16_t* samples = (int16_t*)calloc(numSamples, sizeof(int16_t));
+    for (int i = 0; i < numSamples; i++) samples[i] = (int16_t)(i * 3);
+
+    uint32_t dataSize = numSamples * sizeof(int16_t);
+    uint32_t riffSize = 4 + (8 + 16) + (8 + dataSize);
+    FILE* f = NULL;
+    fopen_s(&f, largePath, "wb");
+    if (f) {
+        fwrite("RIFF", 1, 4, f);
+        fwrite(&riffSize, 4, 1, f);
+        fwrite("WAVE", 1, 4, f);
+        fwrite("fmt ", 1, 4, f);
+        uint32_t fmtSize = 16;
+        fwrite(&fmtSize, 4, 1, f);
+        uint16_t formatTag = 1, channels = 1, bits = 16, align = 2;
+        uint32_t rate = 22050, avg = 44100;
+        fwrite(&formatTag, 2, 1, f);
+        fwrite(&channels, 2, 1, f);
+        fwrite(&rate, 4, 1, f);
+        fwrite(&avg, 4, 1, f);
+        fwrite(&align, 2, 1, f);
+        fwrite(&bits, 2, 1, f);
+        fwrite("data", 1, 4, f);
+        fwrite(&dataSize, 4, 1, f);
+        fwrite(samples, 1, dataSize, f);
+        fclose(f);
+    }
+    free(samples);
+
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    BOOL started = WavPlayerStart(pl, largePath);
+    ASSERT_TRUE(started);
+    ASSERT_TRUE(pl->playing);
+
+    // After initial fill: pcmPos = min(4 * bufSize, pcmSize)
+    // bufSize = 22050, 4*bufSize = 88200, pcmSize = 220500
+    // So pcmPos = 88200, remaining = 132300
+    DWORD pcmPosBefore = pl->pcmPos;
+    ASSERT_LT(pcmPosBefore, pl->pcmSize) << "Should have remaining PCM data";
+    g_mockState.Reset();
+
+    FireWaveOutCallback(NULL);
+
+    EXPECT_GT(pl->pcmPos, pcmPosBefore) << "pcmPos should advance after callback";
+    EXPECT_GE(g_mockState.writeCount, 1) << "callback should call waveOutWrite";
+
+    DeleteFileA(largePath);
+}
+
+TEST_F(WavPlayerTest, CallbackStopsWhenDone) {
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    // Use very short audio to exhaust in one callback
+    int16_t tinySamples[100];
+    for (int i = 0; i < 100; i++) tinySamples[i] = (int16_t)(i * 10);
+
+    char tinyPath[MAX_PATH];
+    char tempDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempDir);
+    _snprintf_s(tinyPath, sizeof(tinyPath), _TRUNCATE, "%s\\bink32w_tiny.wav", tempDir);
+
+    uint32_t dataSize = sizeof(tinySamples);
+    uint32_t riffSize = 4 + (8 + 16) + (8 + dataSize);
+    FILE* f = NULL;
+    fopen_s(&f, tinyPath, "wb");
+    if (f) {
+        fwrite("RIFF", 1, 4, f);
+        fwrite(&riffSize, 4, 1, f);
+        fwrite("WAVE", 1, 4, f);
+        fwrite("fmt ", 1, 4, f);
+        uint32_t fmtSize = 16;
+        fwrite(&fmtSize, 4, 1, f);
+        uint16_t formatTag = 1, channels = 1, bits = 16, align = 2;
+        uint32_t rate = 22050, avg = 44100;
+        fwrite(&formatTag, 2, 1, f);
+        fwrite(&channels, 2, 1, f);
+        fwrite(&rate, 4, 1, f);
+        fwrite(&avg, 4, 1, f);
+        fwrite(&align, 2, 1, f);
+        fwrite(&bits, 2, 1, f);
+        fwrite("data", 1, 4, f);
+        fwrite(&dataSize, 4, 1, f);
+        fwrite(tinySamples, 1, sizeof(tinySamples), f);
+        fclose(f);
+    }
+
+    WavPlayer* pl2 = AllocPlayer();
+    ASSERT_NE(pl2, (WavPlayer*)NULL);
+    BOOL started = WavPlayerStart(pl2, tinyPath);
+    ASSERT_TRUE(started);
+
+    // Exhaust all PCM data via callbacks
+    while (pl2->playing) {
+        FireWaveOutCallback(NULL);
+    }
+
+    EXPECT_FALSE(pl2->playing) << "playing should be FALSE after PCM exhausted";
+    DeleteFileA(tinyPath);
+}
+
+TEST_F(WavPlayerTest, CallbackNoopWhenPaused) {
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    BOOL started = WavPlayerStart(pl, g_testWavPath);
+    ASSERT_TRUE(started);
+
+    WavPlayerPause(pl);
+    DWORD pcmPosBefore = pl->pcmPos;
+    g_mockState.Reset();
+
+    FireWaveOutCallback(NULL);
+
+    EXPECT_EQ(pl->pcmPos, pcmPosBefore) << "pcmPos should not change when paused";
+    EXPECT_EQ(g_mockState.writeCount, 0) << "no waveOutWrite when paused";
+}
+
+// ============================================================================
+// WavPlayerStart edge cases
+// ============================================================================
+
+TEST_F(WavPlayerTest, WavPlayerStartAbsolutePaths) {
+    // Absolute path should not prepend g_dllDir
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    BOOL result = WavPlayerStart(pl, g_testWavPath);
+
+    EXPECT_TRUE(result);
+    EXPECT_TRUE(g_mockState.opened);
+}
+
+TEST_F(WavPlayerTest, WavPlayerStartNullPath) {
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    EXPECT_FALSE(WavPlayerStart(pl, NULL));
 }

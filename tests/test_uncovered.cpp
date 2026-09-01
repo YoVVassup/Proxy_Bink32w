@@ -7,7 +7,7 @@
 //                      sBinkCopyToBuffer scaling, sBinkClose
 // ============================================================================
 
-extern void EnsureInitialized();
+extern BOOL EnsureInitialized();
 extern void LogCallStack(int skip);
 
 // ============================================================================
@@ -18,7 +18,7 @@ int g_mW = 0, g_mH = 0, g_mFR = 0, g_mFRD = 0;
 
 void __stdcall MockSummary(void* handle, void* summary) {
     uint8_t* s = (uint8_t*)summary;
-    memset(s, 0, 512);
+    memset(s, 0, 128);
     *(uint32_t*)(s + 0) = g_mW;
     *(uint32_t*)(s + 4) = g_mH;
     *(uint32_t*)(s + 20) = g_mFR;
@@ -142,6 +142,56 @@ TEST_F(TrackVideoTest, StoresFrameRate) {
     g_mFRD = 2;
     TrackVideo((void*)0x1000, "test.bik", NULL);
     EXPECT_EQ(g_vidCount, 1);
+}
+
+TEST_F(TrackVideoTest, SkipsWavPathWhenFileNotFound) {
+    // Set up an audio mapping that points to a non-existent file
+    int savedMapCount = g_audioMapCount;
+    AudioMap savedMaps[64];
+    memcpy(savedMaps, g_audioMaps, sizeof(savedMaps));
+
+    g_audioMapCount = 1;
+    strncpy_s(g_audioMaps[0].bikName, sizeof(g_audioMaps[0].bikName), "test.bik", _TRUNCATE);
+    strncpy_s(g_audioMaps[0].wavPath, sizeof(g_audioMaps[0].wavPath),
+              "BinkWAV\\nonexistent_file.wav", _TRUNCATE);
+
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+
+    EXPECT_EQ(g_vidCount, 1);
+    EXPECT_STREQ(g_vids[0].wavPath, "") << "wavPath should be empty when replacement file not found";
+
+    // Restore
+    g_audioMapCount = savedMapCount;
+    memcpy(g_audioMaps, savedMaps, sizeof(savedMaps));
+}
+
+TEST_F(TrackVideoTest, KeepsWavPathWhenFileExists) {
+    // Use the real test WAV file from third-party
+    int savedMapCount = g_audioMapCount;
+    AudioMap savedMaps[64];
+    memcpy(savedMaps, g_audioMaps, sizeof(savedMaps));
+
+    char savedDllDir[MAX_PATH];
+    memcpy(savedDllDir, g_dllDir, MAX_PATH);
+
+    // Set g_dllDir to project root so third-party/ path resolves
+    lstrcpynA(g_dllDir, TEST_DATA_DIR "\\..\\..\\", MAX_PATH);
+
+    g_audioMapCount = 1;
+    strncpy_s(g_audioMaps[0].bikName, sizeof(g_audioMaps[0].bikName), "test.bik", _TRUNCATE);
+    strncpy_s(g_audioMaps[0].wavPath, sizeof(g_audioMaps[0].wavPath),
+              "third-party\\a04_f00e.wav", _TRUNCATE);
+
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+
+    EXPECT_EQ(g_vidCount, 1);
+    EXPECT_STREQ(g_vids[0].wavPath, "third-party\\a04_f00e.wav")
+        << "wavPath should be set when replacement file exists";
+
+    // Restore
+    g_audioMapCount = savedMapCount;
+    memcpy(g_audioMaps, savedMaps, sizeof(savedMaps));
+    lstrcpynA(g_dllDir, savedDllDir, MAX_PATH);
 }
 
 // ============================================================================
@@ -1102,4 +1152,195 @@ TEST_F(SBinkWaitTest, MultipleCalls) {
     sBinkWait((void*)0x1000);
     sBinkWait((void*)0x1000);
     EXPECT_EQ(g_waitCalled, 3);
+}
+
+// ============================================================================
+// sBinkDoFrame — audio trigger tests
+// ============================================================================
+
+int g_doFrameCalled = 0;
+
+void __stdcall MockDoFrame(void* a) {
+    g_doFrameCalled++;
+}
+
+class SBinkDoFrameTest : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedDoFrame;
+    void* savedOpen;
+    int savedCount;
+    int savedPlayerCount;
+    WavPlayer savedPlayers[MAX_WAV_PLAYERS];
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedDoFrame = pBinkDoFrame;
+        savedOpen = pBinkOpen;
+        savedCount = g_vidCount;
+        savedPlayerCount = g_playerCount;
+        memcpy(savedPlayers, g_players, sizeof(g_players));
+
+        pBinkGetSummary = (void*)MockSummary;
+        pBinkDoFrame = (void*)MockDoFrame;
+        g_vidCount = 0;
+        g_playerCount = 0;
+        g_doFrameCalled = 0;
+        g_mW = 640;
+        g_mH = 480;
+    }
+
+    void TearDown() override {
+        for (int i = 0; i < g_vidCount; i++) {
+            if (g_vids[i].wavPlayer) {
+                FreePlayer(g_vids[i].wavPlayer);
+                g_vids[i].wavPlayer = NULL;
+            }
+        }
+        pBinkGetSummary = savedSummary;
+        pBinkDoFrame = savedDoFrame;
+        pBinkOpen = savedOpen;
+        g_vidCount = savedCount;
+        g_playerCount = savedPlayerCount;
+        memcpy(g_players, savedPlayers, sizeof(g_players));
+    }
+};
+
+TEST_F(SBinkDoFrameTest, ForwardsToRealDoFrame) {
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+    g_doFrameCalled = 0;
+
+    sBinkDoFrame((void*)0x1000);
+
+    EXPECT_EQ(g_doFrameCalled, 1);
+}
+
+TEST_F(SBinkDoFrameTest, NoAudioWithoutWavPath) {
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+    VideoInfo* vi = FindVideo((void*)0x1000);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    EXPECT_STREQ(vi->wavPath, "");
+
+    sBinkDoFrame((void*)0x1000);
+
+    EXPECT_EQ(vi->wavPlayer, (WavPlayer*)NULL);
+    EXPECT_FALSE(vi->wavStarted);
+}
+
+TEST_F(SBinkDoFrameTest, SkipsAudioWhenAlreadyStarted) {
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+    VideoInfo* vi = FindVideo((void*)0x1000);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    strncpy_s(vi->wavPath, sizeof(vi->wavPath), "test.wav", _TRUNCATE);
+    vi->wavStarted = true;
+
+    int playerCountBefore = g_playerCount;
+    sBinkDoFrame((void*)0x1000);
+
+    EXPECT_EQ(g_playerCount, playerCountBefore) << "No new player should be allocated";
+}
+
+TEST_F(SBinkDoFrameTest, UnknownHandleStillForwards) {
+    g_doFrameCalled = 0;
+
+    sBinkDoFrame((void*)0x9999);
+
+    EXPECT_EQ(g_doFrameCalled, 1);
+}
+
+TEST_F(SBinkDoFrameTest, NullPtrFunctionDoesNotCrash) {
+    pBinkDoFrame = NULL;
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+
+    sBinkDoFrame((void*)0x1000);
+    SUCCEED();
+}
+
+// ============================================================================
+// sBinkOpenWithOptions tests
+// ============================================================================
+
+int g_openWithOptionsCalled = 0;
+void* g_openWithOptionsRet = NULL;
+
+intptr_t __stdcall MockOpenWithOptions(void* a, void* b, void* c) {
+    g_openWithOptionsCalled++;
+    return (intptr_t)g_openWithOptionsRet;
+}
+
+class SBinkOpenWithOptionsTest : public ::testing::Test {
+protected:
+    void* savedSummary;
+    void* savedOpenWithOptions;
+    int savedCount;
+    LONG savedInitState;
+
+    void SetUp() override {
+        savedSummary = pBinkGetSummary;
+        savedOpenWithOptions = pBinkOpenWithOptions;
+        savedCount = g_vidCount;
+        savedInitState = g_initState;
+
+        pBinkGetSummary = (void*)MockSummary;
+        pBinkOpenWithOptions = (void*)MockOpenWithOptions;
+        g_vidCount = 0;
+        g_openWithOptionsCalled = 0;
+        g_openWithOptionsRet = (void*)0x1000;
+        g_mW = 640;
+        g_mH = 480;
+        g_initState = 2; // Bypass EnsureInitialized
+    }
+
+    void TearDown() override {
+        pBinkGetSummary = savedSummary;
+        pBinkOpenWithOptions = savedOpenWithOptions;
+        g_vidCount = savedCount;
+        g_initState = savedInitState;
+    }
+};
+
+TEST_F(SBinkOpenWithOptionsTest, TracksOnSuccess) {
+    g_openWithOptionsRet = (void*)0x2000;
+
+    intptr_t result = sBinkOpenWithOptions((void*)"test.bik", (void*)0, (void*)0);
+
+    EXPECT_EQ(result, (intptr_t)0x2000);
+    EXPECT_EQ(g_vidCount, 1);
+    EXPECT_EQ(g_vids[0].handle, (void*)0x2000);
+}
+
+TEST_F(SBinkOpenWithOptionsTest, NoTrackOnNull) {
+    g_openWithOptionsRet = NULL;
+
+    intptr_t result = sBinkOpenWithOptions((void*)"test.bik", (void*)0, (void*)0);
+
+    EXPECT_EQ(result, (intptr_t)0);
+    EXPECT_EQ(g_vidCount, 0);
+}
+
+TEST_F(SBinkOpenWithOptionsTest, ForwardsAllArgs) {
+    g_openWithOptionsRet = (void*)0x3000;
+
+    sBinkOpenWithOptions((void*)"test.bik", (void*)0x100, (void*)0x200);
+
+    EXPECT_EQ(g_openWithOptionsCalled, 1);
+}
+
+TEST_F(SBinkOpenWithOptionsTest, NullFirstArgNoTrack) {
+    // sBinkOpenWithOptions only tracks when both r (return) and a (first arg) are non-NULL
+    g_openWithOptionsRet = (void*)0x4000;
+
+    sBinkOpenWithOptions(NULL, (void*)0, (void*)0);
+
+    // a is NULL → TrackVideo not called even though handle is valid
+    EXPECT_EQ(g_vidCount, 0);
+}
+
+TEST_F(SBinkOpenWithOptionsTest, NullPtrFunctionReturnsZero) {
+    pBinkOpenWithOptions = NULL;
+
+    intptr_t result = sBinkOpenWithOptions((void*)"test.bik", (void*)0, (void*)0);
+
+    EXPECT_EQ(result, (intptr_t)0);
+    EXPECT_EQ(g_openWithOptionsCalled, 0);
 }

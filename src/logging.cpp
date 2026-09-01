@@ -33,7 +33,11 @@ static void InitLogCs() {
     }
 }
 
+#ifdef BINK_TEST_BUILD
+void RotateLogFile(const char* logPath) {
+#else
 static void RotateLogFile(const char* logPath) {
+#endif
     // Check current file size
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if (!GetFileAttributesExA(logPath, GetFileExInfoStandard, &fad)) return;

@@ -19,6 +19,12 @@ extern BOOL ExtractNameFromCCFileClass(void* ccFile, char* out, int outSize);
 extern VideoInfo g_vids[];
 extern int g_vidCount;
 
+// --- Functions under test (from logging.cpp) ---
+extern void RotateLogFile(const char* logPath);
+
+// --- Testable globals (from binkw32_proxy.cpp) ---
+extern LONG g_initState;
+
 // --- Proxy export stubs (callable from tests) ---
 extern "C" {
     void __stdcall sBinkSetSoundTrack8(void* a, void* b);
@@ -26,6 +32,10 @@ extern "C" {
     void __stdcall sBinkClose(void* a);
     intptr_t __stdcall sBinkCopyToBuffer(void* a, void* b, void* c, void* d, void* e, void* f, void* g);
     intptr_t __stdcall sBinkOpen(void* a, void* b);
+    intptr_t __stdcall sBinkOpenWithOptions(void* a, void* b, void* c);
+    void __stdcall sBinkDoFrame(void* a);
+    intptr_t __stdcall sBinkDoFramePlane(void* a, void* b);
+    void __stdcall sBinkNextFrame(void* a);
     intptr_t __stdcall sBinkPause(void* a, void* b);
     void __stdcall sBinkSetWillLoop(void* a, void* b);
     intptr_t __stdcall sBinkWait(void* a);
@@ -41,7 +51,9 @@ typedef void (__stdcall *MockSummaryFn)(void* handle, void* summary);
 // --- Mockable Bink function pointers (via BINK_TEST_BUILD) ---
 extern void* pBinkGetSummary;
 extern void* pBinkOpen;
+extern void* pBinkOpenWithOptions;
 extern void* pBinkDoFrame;
+extern void* pBinkDoFramePlane;
 extern void* pBinkClose;
 extern void* pBinkCopyToBuffer;
 extern void* pBinkSetVolume;

@@ -6,6 +6,11 @@
 // wav_player.cpp is compiled as a separate translation unit with these macros
 // active, so all waveOut* calls become mock calls.
 //
+// Features:
+//   - Tracks all WaveOut operations (open, close, reset, pause, restart, etc.)
+//   - Stores callback pointer for FireCallback() invocation (WOM_DONE testing)
+//   - Error injection via g_mockFailOpen / g_mockFailNext
+//
 // Usage in test file:
 //   #include "mock_waveout.h"     // must be FIRST
 //   #include "../src/wav_player.cpp"  // waves are redirected
@@ -31,6 +36,20 @@ struct MockWaveOutState {
 };
 
 extern MockWaveOutState g_mockState;
+
+// Error injection: set these before calling the function under test
+extern BOOL g_mockFailOpen;      // waveOutOpen returns MMSYSERR_ERROR
+extern BOOL g_mockFailPrepare;   // waveOutPrepareHeader returns MMSYSERR_ERROR
+extern BOOL g_mockFailWrite;     // waveOutWrite returns MMSYSERR_ERROR
+
+// Callback support: stored from waveOutOpen, invokable via FireWaveOutCallback
+extern HWAVEOUT  g_mockCallbackHandle;   // handle passed to callback
+extern void*     g_mockCallbackPtr;      // WaveOutProc function pointer
+extern DWORD_PTR g_mockCallbackInstance;  // dwInstance from waveOutOpen
+
+// Invoke the registered WaveOut callback with WOM_DONE message.
+// hdr can be NULL (uses last written header) or a specific WAVEHDR*.
+extern "C" void FireWaveOutCallback(WAVEHDR* hdr);
 
 extern "C" {
     MMRESULT WINAPI mock_waveOutOpen(LPHWAVEOUT phwo, UINT_PTR uDeviceID,

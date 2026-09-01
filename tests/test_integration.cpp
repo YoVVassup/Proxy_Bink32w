@@ -402,3 +402,78 @@ TEST(Integration_Ordinals, Group7TableMatchesRealDll) {
     }
     FreeLibrary(hMod);
 }
+
+// ============================================================================
+// 8. End-to-End Proxy Pipeline — BinkOpen → tracking → BinkClose
+//
+// Verifies the proxy intercepts BinkOpen, sets up video tracking, and
+// cleans up on BinkClose. Requires the real Bink DLL (ordinal forwarding).
+// ============================================================================
+
+typedef intptr_t (__stdcall *BinkOpenFn)(const char*, DWORD);
+typedef void     (__stdcall *BinkCloseFn)(void*);
+
+TEST(Integration_ProxyPipeline, BinkOpenCloseTracking) {
+    std::string dllPath = ProxyDllPath();
+    HMODULE hProxy = LoadLibraryA(dllPath.c_str());
+    if (!hProxy) {
+        GTEST_SKIP() << "Cannot load proxy DLL: " << dllPath;
+    }
+
+    auto pOpen  = (BinkOpenFn)GetProcAddress(hProxy, "_BinkOpen@8");
+    auto pClose = (BinkCloseFn)GetProcAddress(hProxy, "_BinkClose@4");
+    ASSERT_NE(pOpen, (BinkOpenFn)NULL);
+    ASSERT_NE(pClose, (BinkCloseFn)NULL);
+
+    std::string bikPath = ProjectRoot() + "\\third-party\\s03_f00e.bik";
+    DWORD attr = GetFileAttributesA(bikPath.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        FreeLibrary(hProxy);
+        GTEST_SKIP() << "Test .bik not found: " << bikPath;
+    }
+
+    // The proxy resolves the real Bink DLL relative to the EXE path.
+    // In test builds, the test EXE is in build_tests/tests/Release/ while
+    // the real DLLs are in build/GROUP_5/Release/. If BinkOpen returns NULL,
+    // it means the real DLL wasn't found — skip rather than fail.
+    intptr_t handle = pOpen(bikPath.c_str(), 0);
+    if (handle == 0) {
+        FreeLibrary(hProxy);
+        GTEST_SKIP() << "BinkOpen returned NULL — real Bink DLL not found from test EXE path";
+    }
+
+    // Verify tracking was set up (internal state)
+    VideoInfo* vid = FindVideo((void*)handle);
+    ASSERT_NE(vid, (VideoInfo*)NULL) << "Video not tracked after BinkOpen";
+    EXPECT_NE(vid->width, 0u);
+    EXPECT_NE(vid->height, 0u);
+
+    // Close — proxy should clean up tracking
+    pClose((void*)handle);
+
+    // Verify tracking was removed
+    VideoInfo* vidAfter = FindVideo((void*)handle);
+    EXPECT_EQ(vidAfter, (VideoInfo*)NULL) << "Video still tracked after BinkClose";
+
+    FreeLibrary(hProxy);
+}
+
+TEST(Integration_ProxyPipeline, BinkOpenInvalidFileReturnsNull) {
+    std::string dllPath = ProxyDllPath();
+    HMODULE hProxy = LoadLibraryA(dllPath.c_str());
+    if (!hProxy) {
+        GTEST_SKIP() << "Cannot load proxy DLL: " << dllPath;
+    }
+
+    auto pOpen = (BinkOpenFn)GetProcAddress(hProxy, "_BinkOpen@8");
+    ASSERT_NE(pOpen, (BinkOpenFn)NULL);
+
+    // Non-existent file should return NULL
+    intptr_t handle = pOpen("Z:\\nonexistent.bik", 0);
+    EXPECT_EQ(handle, (intptr_t)0) << "BinkOpen should return NULL for missing file";
+
+    // Nothing should be tracked
+    EXPECT_EQ(g_vidCount, 0) << "No videos should be tracked after failed open";
+
+    FreeLibrary(hProxy);
+}
