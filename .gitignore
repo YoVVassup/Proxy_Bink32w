@@ -53,3 +53,6 @@ tests/data/
 # Downloaded tools (auto-downloaded by tools/setup.ps1)
 tools/dumpbin/
 tools/ffmpeg.exe
+
+# Test output
+test_results.txt
