@@ -4,6 +4,10 @@
 #include <cstring>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
+#include <vector>
+#include <utility>
+#include <algorithm>
 
 // ============================================================================
 // Integration tests — Test with real DLLs, real .mix files, real .wav files
@@ -48,7 +52,7 @@ static std::string GamePath(const char* relativePath) {
 // ============================================================================
 
 static std::string ProjectRoot() {
-    return std::string(TEST_DATA_DIR) + "\\..\\..";
+    return ProjectRootDir();
 }
 
 static std::string ProjectPath(const char* relativePath) {
@@ -68,6 +72,12 @@ static std::string RealDllPath(const char* dllName) {
 // ============================================================================
 
 static std::string ProxyDllPath() {
+#ifdef PROXY_DLL_PATH
+    {
+        DWORD attr = GetFileAttributesA(PROXY_DLL_PATH);
+        if (attr != INVALID_FILE_ATTRIBUTES) return PROXY_DLL_PATH;
+    }
+#endif
     std::string path5 = ProjectRoot() + "\\build\\GROUP_5\\Release\\binkw32.dll";
     DWORD attr = GetFileAttributesA(path5.c_str());
     if (attr != INVALID_FILE_ATTRIBUTES) return path5;
@@ -77,6 +87,35 @@ static std::string ProxyDllPath() {
     if (attr != INVALID_FILE_ATTRIBUTES) return path7;
 
     return ProjectRoot() + "\\build\\GROUP_5\\Release\\binkw32.dll";
+}
+
+// ============================================================================
+// Proxy DLL loading for tests
+//
+// A proxy DLL that cannot be loaded is a *build* problem (the group target was
+// not configured or not built), not an environment problem: reporting green
+// while no integration check ran at all is exactly what the audit flagged.
+// BINK_TEST_ALLOW_NO_PROXY=1 turns these cases back into skips for setups that
+// deliberately build without groups 5/7.
+// ============================================================================
+
+enum class ProxyDllStatus { Ok, Skipped, Failed };
+
+static bool AllowNoProxyDll() {
+    char buf[8];
+    DWORD n = GetEnvironmentVariableA("BINK_TEST_ALLOW_NO_PROXY", buf, sizeof(buf));
+    return n > 0 && n < sizeof(buf) && buf[0] != '0' && buf[0] != '\0';
+}
+
+static HMODULE LoadProxyDllForTest(std::string& pathOut, ProxyDllStatus& status) {
+    pathOut = ProxyDllPath();
+    HMODULE h = LoadLibraryA(pathOut.c_str());
+    if (h) {
+        status = ProxyDllStatus::Ok;
+        return h;
+    }
+    status = AllowNoProxyDll() ? ProxyDllStatus::Skipped : ProxyDllStatus::Failed;
+    return nullptr;
 }
 
 // ============================================================================
@@ -92,7 +131,8 @@ static const char* EXPORT_NAMES[] = {
     "_BinkGetKeyFrame@12", "_BinkFreeGlobals@0", "_BinkGetPlatformInfo@8",
     "_BinkGetFrameBuffersInfo@8", "_BinkRegisterFrameBuffers@8",
     "_BinkSetVideoOnOff@8", "_BinkSetSoundOnOff@8",
-    "_BinkSetVolume@8", "_BinkSetPan@12", "_BinkSetSpeakerVolumes@20",
+    "_BinkSetVolume@8", "_BinkSetVolume@12", "_BinkSetPan@8", "_BinkSetPan@12",
+    "_BinkSetSpeakerVolumes@20",
     "_BinkService@4", "_BinkShouldSkip@4", "_BinkGetPalette@4",
     "_BinkControlBackgroundIO@8", "_BinkControlPlatformFeatures@8",
     "_BinkSetWillLoop@8", "_BinkOpenTrack@8", "_BinkCloseTrack@4",
@@ -114,7 +154,7 @@ static const char* EXPORT_NAMES[] = {
     "_BinkBufferClear@8", "_BinkRestoreCursor@4",
     "_BinkStartAsyncThread@8", "_BinkDoFrameAsync@12",
     "_BinkDoFrameAsyncWait@8", "_BinkRequestStopAsyncThread@4",
-    "_BinkWaitStopAsyncThread@4", "_BinkSetMixBins@16",
+    "_BinkWaitStopAsyncThread@4", "_BinkSetMixBins@16", "_BinkSetMixBins@8",
     "_BinkSetMixBinVolumes@20", "_ExpandBink@56", "_ExpandBundleSizes@8",
     "_RADSetMemory@8", "_BinkSetMemory@8", "_RADTimerRead@0",
     "_radmalloc@4", "_radfree@4", "_YUV_init@4",
@@ -133,11 +173,15 @@ static const char* EXPORT_NAMES[] = {
 };
 
 TEST(Integration_DllExports, AllExportsResolved) {
-    std::string dllPath = ProxyDllPath();
-    HMODULE hMod = LoadLibraryA(dllPath.c_str());
-    if (!hMod) {
-        GTEST_SKIP() << "Cannot load proxy DLL: " << dllPath << " (error " << GetLastError() << ")";
+    std::string dllPath;
+    ProxyDllStatus st;
+    HMODULE hMod = LoadProxyDllForTest(dllPath, st);
+    if (st == ProxyDllStatus::Skipped) {
+        GTEST_SKIP() << "proxy DLL not present: " << dllPath << " (BINK_TEST_ALLOW_NO_PROXY set)";
     }
+    ASSERT_NE(hMod, (HMODULE)NULL) << "proxy DLL not loadable: " << dllPath
+                                   << " (error " << GetLastError()
+                                   << ") - build group 5/7 first, or set BINK_TEST_ALLOW_NO_PROXY=1 to skip";
 
     int found = 0;
     for (const char* name : EXPORT_NAMES) {
@@ -151,11 +195,15 @@ TEST(Integration_DllExports, AllExportsResolved) {
 }
 
 TEST(Integration_DllExports, BinkSetMemoryByName) {
-    std::string dllPath = ProxyDllPath();
-    HMODULE hMod = LoadLibraryA(dllPath.c_str());
-    if (!hMod) {
-        GTEST_SKIP() << "Cannot load proxy DLL: " << dllPath;
+    std::string dllPath;
+    ProxyDllStatus st;
+    HMODULE hMod = LoadProxyDllForTest(dllPath, st);
+    if (st == ProxyDllStatus::Skipped) {
+        GTEST_SKIP() << "proxy DLL not present: " << dllPath << " (BINK_TEST_ALLOW_NO_PROXY set)";
     }
+    ASSERT_NE(hMod, (HMODULE)NULL) << "proxy DLL not loadable: " << dllPath
+                                   << " (error " << GetLastError()
+                                   << ") - build group 5/7 first, or set BINK_TEST_ALLOW_NO_PROXY=1 to skip";
 
     FARPROC proc = GetProcAddress(hMod, "_BinkSetMemory@8");
     EXPECT_NE(proc, (FARPROC)NULL);
@@ -301,13 +349,58 @@ TEST_F(IntegrationConfigTest, LoadRealConfig) {
     LoadAudioConfig();
 
     EXPECT_EQ(g_exceptionCount, 3);
-    if (g_exceptionCount >= 1) EXPECT_STREQ(g_exceptions[0].mixName, "movies01.mix");
-    if (g_exceptionCount >= 2) EXPECT_STREQ(g_exceptions[1].mixName, "movies02.mix");
-    if (g_exceptionCount >= 3) EXPECT_STREQ(g_exceptions[2].mixName, "movmd03.mix");
+    if (g_exceptionCount >= 1) {
+        EXPECT_STREQ(g_exceptions[0].mixName, "movies01.mix");
+        EXPECT_STREQ(g_exceptions[0].baseDir, "BinkWAV\\RA2");
+    }
+    if (g_exceptionCount >= 2) {
+        EXPECT_STREQ(g_exceptions[1].mixName, "movies02.mix");
+        EXPECT_STREQ(g_exceptions[1].baseDir, "BinkWAV\\RA2");
+    }
+    if (g_exceptionCount >= 3) {
+        EXPECT_STREQ(g_exceptions[2].mixName, "movmd03.mix");
+        EXPECT_STREQ(g_exceptions[2].baseDir, "BinkWAV\\RA2YR");
+    }
+}
+
+TEST_F(IntegrationConfigTest, RealConfigBaseDirAuto) {
+    std::string projectDir = ProjectRoot() + "\\";
+    lstrcpynA(g_dllDir, projectDir.c_str(), MAX_PATH);
+    ResetAudioConfig();
+    LoadAudioConfig();
+
+    // Create BinkWAV\RA2\westlogo.wav under project root (if not already present).
+    std::string dir1 = ProjectPath("BinkWAV");
+    std::string dir2 = ProjectPath("BinkWAV\\RA2");
+    std::string wavPath = ProjectPath("BinkWAV\\RA2\\westlogo.wav");
+    BOOL createdDirs = FALSE;
+    BOOL createdFile = FALSE;
+    if (GetFileAttributesA(wavPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        CreateDirectoryA(dir1.c_str(), NULL);
+        CreateDirectoryA(dir2.c_str(), NULL);
+        FILE* f = NULL;
+        fopen_s(&f, wavPath.c_str(), "wb");
+        if (f) {
+            fwrite("RIFF", 1, 4, f);
+            fclose(f);
+            createdFile = TRUE;
+        }
+        createdDirs = TRUE;
+    }
 
     const char* result = FindWavForBik("westlogo.bik", "movies01.mix");
     EXPECT_NE(result, (const char*)NULL);
     if (result) EXPECT_STREQ(result, "BinkWAV\\RA2\\westlogo.wav");
+
+    // No file on disk → auto-resolve fails, no [audio] entry → NULL
+    const char* missing = FindWavForBik("no_such_stem.bik", "movies01.mix");
+    EXPECT_EQ(missing, (const char*)NULL);
+
+    if (createdFile) DeleteFileA(wavPath.c_str());
+    if (createdDirs) {
+        RemoveDirectoryA(dir2.c_str());
+        RemoveDirectoryA(dir1.c_str());
+    }
 }
 
 TEST_F(IntegrationConfigTest, RealExceptionPriority) {
@@ -316,6 +409,23 @@ TEST_F(IntegrationConfigTest, RealExceptionPriority) {
     ResetAudioConfig();
     LoadAudioConfig();
 
+    // base variant: auto path only when file exists; create it temporarily.
+    std::string dir1 = ProjectPath("BinkWAV");
+    std::string dir2 = ProjectPath("BinkWAV\\RA2");
+    std::string wavPath = ProjectPath("BinkWAV\\RA2\\a01_f00e.wav");
+    BOOL createdFile = FALSE;
+    if (GetFileAttributesA(wavPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        CreateDirectoryA(dir1.c_str(), NULL);
+        CreateDirectoryA(dir2.c_str(), NULL);
+        FILE* f = NULL;
+        fopen_s(&f, wavPath.c_str(), "wb");
+        if (f) {
+            fwrite("RIFF", 1, 4, f);
+            fclose(f);
+            createdFile = TRUE;
+        }
+    }
+
     const char* exceptionResult = FindWavForBik("a01_f00e.bik", "movies01.mix");
     EXPECT_NE(exceptionResult, (const char*)NULL);
     if (exceptionResult) EXPECT_STREQ(exceptionResult, "BinkWAV\\RA2\\a01_f00e.wav");
@@ -323,6 +433,12 @@ TEST_F(IntegrationConfigTest, RealExceptionPriority) {
     const char* noMixResult = FindWavForBik("a01_f00e.bik", NULL);
     EXPECT_NE(noMixResult, (const char*)NULL);
     if (noMixResult) EXPECT_STREQ(noMixResult, "BinkWAV\\RA2\\a01_f00e.wav");
+
+    if (createdFile) {
+        DeleteFileA(wavPath.c_str());
+        RemoveDirectoryA(dir2.c_str());
+        RemoveDirectoryA(dir1.c_str());
+    }
 }
 
 // ============================================================================
@@ -403,6 +519,258 @@ TEST(Integration_Ordinals, Group7TableMatchesRealDll) {
     FreeLibrary(hMod);
 }
 
+// ----------------------------------------------------------------------------
+// Name <-> ordinal cross-validation.
+//
+// The presence checks above pass even when the *mapping* is wrong (any ordinal
+// 1..N resolves). These tests parse the two generated tables and compare them
+// with the real binaries: src/exports.def against the known export list, and
+// src/ordinals.inc against the actual name/ordinal pairs of a real DLL.
+// ----------------------------------------------------------------------------
+
+static std::string ReadTextFile(const std::string& path) {
+    FILE* f = NULL;
+    fopen_s(&f, path.c_str(), "rb");
+    if (!f) return "";
+    std::string content;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) content.append(buf, n);
+    fclose(f);
+    return content;
+}
+
+// "    _BinkOpen@8=_sBinkOpen@8 @4" -> ("_BinkOpen@8", 4)
+static bool ParseExportsDef(std::vector<std::pair<std::string, int>>& out) {
+    std::string text = ReadTextFile(ProjectPath("src\\exports.def"));
+    if (text.empty()) return false;
+    size_t lineStart = 0;
+    while (lineStart < text.size()) {
+        size_t lineEnd = text.find('\n', lineStart);
+        if (lineEnd == std::string::npos) lineEnd = text.size();
+        std::string line = text.substr(lineStart, lineEnd - lineStart);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t eq = line.find('=');
+        size_t at = line.rfind(" @");
+        if (!line.empty() && (line[0] == ' ' || line[0] == '\t') &&
+            eq != std::string::npos && at != std::string::npos && at > eq) {
+            size_t nameStart = line.find_first_not_of(" \t");
+            std::string name = line.substr(nameStart, eq - nameStart);
+            out.push_back(std::make_pair(name, atoi(line.c_str() + at + 2)));
+        }
+        lineStart = lineEnd + 1;
+    }
+    return !out.empty();
+}
+
+// g_ordinals_groupN[] = { OE(Name, ordinal), ... }
+static bool LoadOrdinalTable(int group, std::vector<std::pair<std::string, int>>& out) {
+    std::string text = ReadTextFile(ProjectPath("src\\ordinals.inc"));
+    if (text.empty()) return false;
+    char key[64];
+    _snprintf_s(key, sizeof(key), _TRUNCATE, "g_ordinals_group%d[] = {", group);
+    size_t start = text.find(key);
+    if (start == std::string::npos) return false;
+    size_t end = text.find("};", start);
+    if (end == std::string::npos) return false;
+    std::string body = text.substr(start, end - start);
+    size_t pos = 0;
+    while ((pos = body.find("OE(", pos)) != std::string::npos) {
+        size_t nameStart = pos + 3;
+        size_t comma = body.find(',', nameStart);
+        size_t close = body.find(')', comma);
+        if (comma == std::string::npos || close == std::string::npos) break;
+        std::string name = body.substr(nameStart, comma - nameStart);
+        size_t nb = name.find_first_not_of(" \t");
+        if (nb != std::string::npos) name = name.substr(nb);
+        out.push_back(std::make_pair(name, atoi(body.c_str() + comma + 1)));
+        pos = close + 1;
+    }
+    return !out.empty();
+}
+
+// Real binkw32 DLLs export stdcall-decorated names (_BinkOpen@8), while
+// src/ordinals.inc stores undecorated labels (BinkOpen) - strip the prefix and
+// the @N suffix before comparing.
+static std::string StripDecoration(const std::string& name) {
+    std::string s = name;
+    if (!s.empty() && s[0] == '_') s.erase(0, 1);
+    size_t at = s.rfind('@');
+    if (at != std::string::npos && at + 1 < s.size()) {
+        bool digitsOnly = true;
+        for (size_t i = at + 1; i < s.size(); i++) {
+            if (s[i] < '0' || s[i] > '9') { digitsOnly = false; break; }
+        }
+        if (digitsOnly) s.erase(at);
+    }
+    return s;
+}
+
+// Name/ordinal pairs straight from the export directory of a loaded image.
+static bool GetImageExports(HMODULE hMod, std::vector<std::pair<std::string, int>>& out) {
+    BYTE* base = (BYTE*)hMod;
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    IMAGE_DATA_DIRECTORY dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (dir.VirtualAddress == 0) return false;
+    IMAGE_EXPORT_DIRECTORY* exp = (IMAGE_EXPORT_DIRECTORY*)(base + dir.VirtualAddress);
+    DWORD* names = (DWORD*)(base + exp->AddressOfNames);
+    WORD* ordinals = (WORD*)(base + exp->AddressOfNameOrdinals);
+    for (DWORD i = 0; i < exp->NumberOfNames; i++) {
+        const char* name = (const char*)(base + names[i]);
+        int ordinal = (int)(exp->Base + ordinals[i]);
+        out.push_back(std::make_pair(name, ordinal));
+    }
+    return !out.empty();
+}
+
+// Every table entry must resolve to the same name/ordinal pair in the real
+// DLL; a presence-only check passes even when the mapping is wrong.
+static void CheckTableAgainstRealDll(int group, const char* dllName) {
+    std::vector<std::pair<std::string, int>> table;
+    ASSERT_TRUE(LoadOrdinalTable(group, table))
+        << "cannot parse src/ordinals.inc group " << group;
+
+    std::string dllPath = RealDllPath(dllName);
+    HMODULE hMod = LoadLibraryA(dllPath.c_str());
+    ASSERT_NE(hMod, (HMODULE)NULL) << "Cannot load real DLL: " << dllPath;
+
+    std::vector<std::pair<std::string, int>> exports;
+    bool parsed = GetImageExports(hMod, exports);
+    FreeLibrary(hMod);
+    ASSERT_TRUE(parsed) << "cannot parse export directory of " << dllPath;
+
+    int missing = 0;
+    int mismatched = 0;
+    for (const auto& entry : table) {
+        bool found = false;
+        for (const auto& exp : exports) {
+            if (StripDecoration(exp.first) == entry.first) {
+                found = true;
+                if (exp.second != entry.second) {
+                    mismatched++;
+                    ADD_FAILURE() << entry.first << ": src/ordinals.inc says ordinal "
+                                  << entry.second << ", " << dllName << " exports it at "
+                                  << exp.second;
+                }
+                break;
+            }
+        }
+        if (!found) {
+            missing++;
+            ADD_FAILURE() << entry.first << " (group " << group
+                          << ") is not exported by " << dllName;
+        }
+    }
+    EXPECT_EQ(missing, 0) << missing << " table entries missing from " << dllName;
+    EXPECT_EQ(mismatched, 0) << mismatched << " name/ordinal mismatches in " << dllName;
+}
+
+TEST(Integration_Ordinals, OrdinalsIncMatchesGroup5Dll) {
+    CheckTableAgainstRealDll(5, "binkw32_1.0q.dll");
+}
+
+TEST(Integration_Ordinals, OrdinalsIncMatchesGroup7Dll) {
+    CheckTableAgainstRealDll(7, "binkw32_1.9u.dll");
+}
+
+TEST(Integration_Ordinals, ExportsDefMatchesKnownExportList) {
+    std::vector<std::pair<std::string, int>> entries;
+    ASSERT_TRUE(ParseExportsDef(entries)) << "cannot parse src/exports.def";
+
+    EXPECT_EQ(entries.size(), sizeof(EXPORT_NAMES) / sizeof(EXPORT_NAMES[0]))
+        << "src/exports.def and the test export list must agree on the count";
+
+    // Every listed name must be exported by the def, and vice versa.
+    for (const char* name : EXPORT_NAMES) {
+        bool found = false;
+        for (const auto& e : entries) {
+            if (e.first == name) { found = true; break; }
+        }
+        EXPECT_TRUE(found) << "EXPORT_NAMES entry missing from src/exports.def: " << name;
+    }
+    for (const auto& e : entries) {
+        bool found = false;
+        for (const char* name : EXPORT_NAMES) {
+            if (e.first == name) { found = true; break; }
+        }
+        EXPECT_TRUE(found) << "src/exports.def entry missing from EXPORT_NAMES: " << e.first;
+    }
+
+    // Ordinals must stay dense and unique (1..N): RA2 imports by name, but the
+    // def ordinals are what the proxy exposes to ordinal importers.
+    std::vector<int> ordinals;
+    for (const auto& e : entries) ordinals.push_back(e.second);
+    std::sort(ordinals.begin(), ordinals.end());
+    for (size_t i = 0; i < ordinals.size(); i++) {
+        EXPECT_EQ(ordinals[i], (int)i + 1)
+            << "src/exports.def ordinals must be exactly 1.." << ordinals.size();
+    }
+}
+
+// ============================================================================
+// DLL-side tracking observation
+//
+// The test EXE links src/binkw32_proxy.cpp as well, so its own g_vidCount
+// copy says nothing about the *loaded* proxy DLL (the module keeps its own
+// statics — an EXPECT on the EXE copy can never fail). The only state the DLL
+// itself writes out is its log: TrackVideo logs "Tracked video:" / "Updated
+// video:" exactly when the DLL's counter changes. These helpers capture just
+// the part of <dll dir>\binkw32_proxy.log written by one call made through
+// the loaded DLL.
+// ============================================================================
+
+static std::string ProxyLogPath(const std::string& dllPath) {
+    // PROXY_DLL_PATH comes from $<TARGET_FILE>, which CMake may spell with
+    // forward slashes — both separators have to be recognised or the helper
+    // silently reads a relative "binkw32_proxy.log" in the working directory.
+    size_t slash = dllPath.find_last_of("\\/");
+    std::string dir = (slash == std::string::npos) ? std::string() : dllPath.substr(0, slash + 1);
+    return dir + "binkw32_proxy.log";
+}
+
+static std::string ReadSharedTextFile(const std::string& path) {
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return std::string();
+    std::string out;
+    char buf[4096];
+    DWORD n = 0;
+    while (ReadFile(h, buf, (DWORD)sizeof(buf), &n, NULL) && n > 0) out.append(buf, n);
+    CloseHandle(h);
+    return out;
+}
+
+// Resets the log before the observed call: the DLL recreates the file on its
+// first write (CREATE_ALWAYS), so the tail after the call belongs to this
+// session alone. If the file is held open by a still-logging DLL instance the
+// delete fails — the pre-call content is remembered and stripped instead.
+class ProxyLogTail {
+public:
+    explicit ProxyLogTail(const std::string& dllPath) : m_path(ProxyLogPath(dllPath)) {
+        m_before = ReadSharedTextFile(m_path);
+        if (DeleteFileA(m_path.c_str())) m_before.clear();
+    }
+
+    std::string Tail() const {
+        std::string now = ReadSharedTextFile(m_path);
+        if (!m_before.empty() && now.size() >= m_before.size() &&
+            now.compare(0, m_before.size(), m_before) == 0) {
+            return now.substr(m_before.size());
+        }
+        return now;
+    }
+
+    const std::string& Path() const { return m_path; }
+
+private:
+    std::string m_path;
+    std::string m_before;
+};
+
 // ============================================================================
 // 8. End-to-End Proxy Pipeline — BinkOpen → tracking → BinkClose
 //
@@ -412,13 +780,18 @@ TEST(Integration_Ordinals, Group7TableMatchesRealDll) {
 
 typedef intptr_t (__stdcall *BinkOpenFn)(const char*, DWORD);
 typedef void     (__stdcall *BinkCloseFn)(void*);
+typedef intptr_t (__stdcall *BinkGetErrorFn)();
 
 TEST(Integration_ProxyPipeline, BinkOpenCloseTracking) {
-    std::string dllPath = ProxyDllPath();
-    HMODULE hProxy = LoadLibraryA(dllPath.c_str());
-    if (!hProxy) {
-        GTEST_SKIP() << "Cannot load proxy DLL: " << dllPath;
+    std::string dllPath;
+    ProxyDllStatus st;
+    HMODULE hProxy = LoadProxyDllForTest(dllPath, st);
+    if (st == ProxyDllStatus::Skipped) {
+        GTEST_SKIP() << "proxy DLL not present: " << dllPath << " (BINK_TEST_ALLOW_NO_PROXY set)";
     }
+    ASSERT_NE(hProxy, (HMODULE)NULL) << "proxy DLL not loadable: " << dllPath
+                                     << " (error " << GetLastError()
+                                     << ") - build group 5/7 first, or set BINK_TEST_ALLOW_NO_PROXY=1 to skip";
 
     auto pOpen  = (BinkOpenFn)GetProcAddress(hProxy, "_BinkOpen@8");
     auto pClose = (BinkCloseFn)GetProcAddress(hProxy, "_BinkClose@4");
@@ -432,48 +805,93 @@ TEST(Integration_ProxyPipeline, BinkOpenCloseTracking) {
         GTEST_SKIP() << "Test .bik not found: " << bikPath;
     }
 
-    // The proxy resolves the real Bink DLL relative to the EXE path.
-    // In test builds, the test EXE is in build_tests/tests/Release/ while
-    // the real DLLs are in build/GROUP_5/Release/. If BinkOpen returns NULL,
-    // it means the real DLL wasn't found — skip rather than fail.
+    // The real Bink DLL is copied next to the proxy by the POST_BUILD step
+    // (root CMakeLists.txt, from Real/) and the proxy looks for it next to the
+    // EXE first, then next to itself — NULL for an existing .bik is a
+    // build/regression problem, so it must go red, not skip. Skipping stays
+    // only for the legitimate "group not built" case handled above by
+    // LoadProxyDllForTest (BINK_TEST_ALLOW_NO_PROXY=1).
+    ProxyLogTail probe(dllPath);
     intptr_t handle = pOpen(bikPath.c_str(), 0);
     if (handle == 0) {
+        std::string err;
+        BinkGetErrorFn pGetError = (BinkGetErrorFn)GetProcAddress(hProxy, "_BinkGetError@0");
+        if (pGetError) {
+            const char* e = (const char*)pGetError();
+            if (e && e[0]) { err = "; BinkGetError: "; err += e; }
+        }
         FreeLibrary(hProxy);
-        GTEST_SKIP() << "BinkOpen returned NULL — real Bink DLL not found from test EXE path";
+        FAIL() << "BinkOpen returned NULL for an existing test .bik: " << bikPath
+               << " - the real Bink DLL must be present next to the proxy "
+                  "(POST_BUILD copy from Real/); build the group first" << err;
     }
 
-    // Verify tracking was set up (internal state)
-    VideoInfo* vid = FindVideo((void*)handle);
-    ASSERT_NE(vid, (VideoInfo*)NULL) << "Video not tracked after BinkOpen";
-    EXPECT_NE(vid->width, 0u);
-    EXPECT_NE(vid->height, 0u);
+    // Positive control for the DLL-side observation used in
+    // BinkOpenInvalidFileReturnsNull: a successful open must show up in the
+    // DLL's own log, otherwise "nothing tracked after a failed open" would be
+    // a blind (vacuously green) check.
+    std::string tail = probe.Tail();
+    EXPECT_TRUE(tail.find("Tracked video:") != std::string::npos ||
+                tail.find("Updated video:") != std::string::npos)
+        << "the proxy DLL opened the file but its log shows no tracking entry "
+           "(log: " << probe.Path() << "), DLL log tail:\n" << tail;
 
-    // Close — proxy should clean up tracking
+    // Internal tracking lives inside the loaded DLL module; the counter itself
+    // is covered by the log check above, and the handle is verified via the
+    // exported BinkGetSummary, then the close cycle.
+    typedef void (__stdcall *BinkGetSummaryFn)(void*, void*);
+    BinkGetSummaryFn pSum = (BinkGetSummaryFn)GetProcAddress(hProxy, "_BinkGetSummary@8");
+    if (pSum) {
+        unsigned char summary[128] = {};
+        pSum((void*)handle, summary);
+        uint32_t width = 0;
+        memcpy(&width, summary, sizeof(width));
+        EXPECT_GT(width, 0u) << "BinkGetSummary reported zero width for a live handle";
+    }
+
     pClose((void*)handle);
-
-    // Verify tracking was removed
-    VideoInfo* vidAfter = FindVideo((void*)handle);
-    EXPECT_EQ(vidAfter, (VideoInfo*)NULL) << "Video still tracked after BinkClose";
 
     FreeLibrary(hProxy);
 }
 
 TEST(Integration_ProxyPipeline, BinkOpenInvalidFileReturnsNull) {
-    std::string dllPath = ProxyDllPath();
-    HMODULE hProxy = LoadLibraryA(dllPath.c_str());
-    if (!hProxy) {
-        GTEST_SKIP() << "Cannot load proxy DLL: " << dllPath;
+    std::string dllPath;
+    ProxyDllStatus st;
+    HMODULE hProxy = LoadProxyDllForTest(dllPath, st);
+    if (st == ProxyDllStatus::Skipped) {
+        GTEST_SKIP() << "proxy DLL not present: " << dllPath << " (BINK_TEST_ALLOW_NO_PROXY set)";
     }
+    ASSERT_NE(hProxy, (HMODULE)NULL) << "proxy DLL not loadable: " << dllPath
+                                     << " (error " << GetLastError()
+                                     << ") - build group 5/7 first, or set BINK_TEST_ALLOW_NO_PROXY=1 to skip";
 
     auto pOpen = (BinkOpenFn)GetProcAddress(hProxy, "_BinkOpen@8");
     ASSERT_NE(pOpen, (BinkOpenFn)NULL);
+
+    // Resets the proxy log so everything written below is from OUR call.
+    ProxyLogTail probe(dllPath);
 
     // Non-existent file should return NULL
     intptr_t handle = pOpen("Z:\\nonexistent.bik", 0);
     EXPECT_EQ(handle, (intptr_t)0) << "BinkOpen should return NULL for missing file";
 
-    // Nothing should be tracked
-    EXPECT_EQ(g_vidCount, 0) << "No videos should be tracked after failed open";
+    // State check through the loaded DLL. Its g_vidCount lives inside the
+    // module — the EXE-side copy this test asserted before was a different
+    // variable entirely and could never catch a regression. TrackVideo logs
+    // "Tracked video:" / "Updated video:" exactly when it increments the DLL's
+    // counter, so the absence of those lines after OUR call proves nothing was
+    // tracked.
+    std::string tail = probe.Tail();
+    EXPECT_NE(tail.find("BinkOpen"), std::string::npos)
+        << "no trace of our call in the proxy log " << probe.Path()
+        << " — logging disabled ([log] in binkw32.cfg)? DLL-side tracking state "
+           "cannot be observed otherwise, refusing to pass green";
+    EXPECT_EQ(tail.find("Tracked video:"), std::string::npos)
+        << "the loaded proxy DLL tracked a video after a FAILED BinkOpen; "
+           "DLL log tail:\n" << tail;
+    EXPECT_EQ(tail.find("Updated video:"), std::string::npos)
+        << "the loaded proxy DLL re-tracked a video after a FAILED BinkOpen; "
+           "DLL log tail:\n" << tail;
 
     FreeLibrary(hProxy);
 }

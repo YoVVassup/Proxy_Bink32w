@@ -1,7 +1,6 @@
 # CLion
 .idea/
 cmake-build-*/
-*.log
 
 # Visual Studio
 .vs/
@@ -19,8 +18,8 @@ build_tests/
 test_run/
 x64/
 Win32/
-Debug/
-Release/
+/Debug/
+/Release/
 ipch/
 *.aps
 *.pdb
@@ -56,3 +55,7 @@ tools/ffmpeg.exe
 
 # Test output
 test_results.txt
+binkw32_proxy.log.*
+
+# Personal (not part of the repository)
+Agent.md

@@ -226,3 +226,45 @@ TEST(ExtractNameFromCCFileClassTest, GarbagePointerReturnsFalse) {
     EXPECT_FALSE(ExtractNameFromCCFileClass((void*)0x00000010, out, sizeof(out)));
     EXPECT_EQ(out[0], '\0');
 }
+
+// ============================================================================
+// IHCore ExtBink_GetCurrentBikName resolution
+//
+// IHCore declares (IHCore/IHCore/ExtBink.cpp:58, no .def, no /export):
+//   extern "C" __declspec(dllexport) const char* __stdcall ExtBink_GetCurrentBikName();
+// MSVC therefore exports the stdcall-decorated name
+// "_ExtBink_GetCurrentBikName@0" - verified with a minimal cl /LD build +
+// dumpbin /exports. The proxy must resolve that name; looking up the plain
+// name returns NULL and silently loses the authoritative .bik name for
+// BINKIOPROCESSOR opens (IHCore hooks the CCFileClass vtable).
+// ============================================================================
+
+extern "C" __declspec(dllexport) const char* __stdcall ExtBink_GetCurrentBikName() {
+    return "ihcore_current.bik";
+}
+
+TEST(ExtBikNameGetterTest, ResolvesDecoratedExport) {
+    HMODULE self = GetModuleHandleA(NULL);
+    ASSERT_NE(self, (HMODULE)NULL);
+    FARPROC p = ResolveExtBikNameGetter(self);
+    ASSERT_NE(p, (FARPROC)NULL)
+        << "MSVC-decorated name _ExtBink_GetCurrentBikName@0 not resolved";
+    auto fn = (const char* (__stdcall*)())p;
+    EXPECT_STREQ(fn(), "ihcore_current.bik");
+}
+
+TEST(ExtBikNameGetterTest, PlainNameIsAbsentSoDecoratedPathIsWhatWorks) {
+    HMODULE self = GetModuleHandleA(NULL);
+    ASSERT_NE(self, (HMODULE)NULL);
+    // This module only exports the decorated name - the plain lookup that the
+    // proxy used before the fix must fail here.
+    EXPECT_EQ(GetProcAddress(self, "ExtBink_GetCurrentBikName"), (FARPROC)NULL);
+    EXPECT_NE(ResolveExtBikNameGetter(self), (FARPROC)NULL);
+}
+
+TEST(ExtBikNameGetterTest, ModuleWithoutGetterReturnsNull) {
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    ASSERT_NE(k32, (HMODULE)NULL);
+    EXPECT_EQ(ResolveExtBikNameGetter(k32), (FARPROC)NULL);
+    EXPECT_EQ(ResolveExtBikNameGetter(NULL), (FARPROC)NULL);
+}

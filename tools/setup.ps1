@@ -16,6 +16,23 @@ param(
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Any failure sets this so the script exits non-zero instead of printing
+# "Done." with code 0.
+$script:hadError = $false
+
+# Per-run scratch directory under %TEMP%. A fixed path (dumpbin.zip,
+# ffmpeg_extract) is writable by anything on the machine between the download
+# and the extraction - a classic TOCTOU window.
+function New-WorkDir($name) {
+    $dir = Join-Path $env:TEMP ("bink32w_setup_" + $name + "_" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    return $dir
+}
+
+function Remove-WorkDir($dir) {
+    if ($dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
 # --- dumpbin (Delphier/dumpbin) ---
 function Install-Dumpbin {
     $targetDir = Join-Path $scriptDir "dumpbin"
@@ -34,43 +51,69 @@ function Install-Dumpbin {
         $asset = $release.assets | Where-Object { $_.name -match "x64\.zip$" } | Select-Object -First 1
         if (-not $asset) {
             Write-Error "No x64 zip found in latest release"
+            $script:hadError = $true
             return
         }
         $downloadUrl = $asset.browser_download_url
         Write-Host "  Version: $($release.tag_name) ($([math]::Round($asset.size / 1MB, 1)) MB)"
     } catch {
         Write-Error "Failed to query GitHub API: $_"
+        $script:hadError = $true
         return
     }
 
-    $zipPath = Join-Path $env:TEMP "dumpbin.zip"
+    $workDir = New-WorkDir "dumpbin"
+    $zipPath = Join-Path $workDir "dumpbin.zip"
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download: $_"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
+        return
+    }
+
+    # The API reports the asset size - catch a truncated/partial write before
+    # anything is extracted.
+    $zipSize = (Get-Item $zipPath).Length
+    if ($zipSize -ne $asset.size) {
+        Write-Error "Size mismatch for dumpbin.zip: got $zipSize bytes, expected $($asset.size)"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
+        return
+    }
+
+    # Extract into the scratch directory first: tools/dumpbin is replaced only
+    # after a complete extraction, never deleted beforehand.
+    $staging = Join-Path $workDir "stage"
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $staging -Force
+    } catch {
+        Write-Error "Failed to extract: $_"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
+        return
+    }
+
+    $found = Get-ChildItem $staging -Filter "dumpbin.exe" -Recurse | Select-Object -First 1
+    if (-not $found) {
+        Write-Error "dumpbin.exe not found after extraction"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
         return
     }
 
     if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force }
-    Expand-Archive -Path $zipPath -DestinationPath $targetDir -Force
-    Remove-Item $zipPath -Force
+    New-Item -ItemType Directory -Path $targetDir | Out-Null
+    Copy-Item -Path (Join-Path $found.DirectoryName "*") -Destination $targetDir -Recurse -Force
+    Remove-WorkDir $workDir
 
     if (Test-Path $targetExe) {
         Write-Host "  Installed to $targetDir" -ForegroundColor Green
     } else {
-        # Some zips extract into a subdirectory
-        $nested = Get-ChildItem $targetDir -Filter "dumpbin.exe" -Recurse | Select-Object -First 1
-        if ($nested) {
-            $nestedDir = $nested.DirectoryName
-            if ($nestedDir -ne $targetDir) {
-                Get-ChildItem $nestedDir | Move-Item -Destination $targetDir -Force
-                Remove-Item $nestedDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            Write-Host "  Installed to $targetDir" -ForegroundColor Green
-        } else {
-            Write-Error "dumpbin.exe not found after extraction"
-        }
+        Write-Error "dumpbin.exe missing after install into $targetDir"
+        $script:hadError = $true
     }
 }
 
@@ -88,31 +131,53 @@ function Install-FFmpeg {
     $zipName = "ffmpeg-master-latest-win64-gpl.zip"
     $downloadUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$zipName"
 
-    $zipPath = Join-Path $env:TEMP "ffmpeg.zip"
+    $workDir = New-WorkDir "ffmpeg"
+    $zipPath = Join-Path $workDir $zipName
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Write-Host "  Downloading $zipName (~160 MB)..."
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download: $_"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
+        return
+    }
+
+    # No hash is published for the "latest" builds, so at least confirm the
+    # payload is a zip (PK) before handing it to Expand-Archive.
+    $fs = [System.IO.File]::OpenRead($zipPath)
+    $sig = New-Object byte[] 2
+    [void]$fs.Read($sig, 0, 2)
+    $fs.Close()
+    if ($sig[0] -ne 0x50 -or $sig[1] -ne 0x4B) {
+        Write-Error "Downloaded file is not a zip archive"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
         return
     }
 
     Write-Host "  Extracting..."
-    $extractDir = Join-Path $env:TEMP "ffmpeg_extract"
-    if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
-    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-    Remove-Item $zipPath -Force
+    $extractDir = Join-Path $workDir "extract"
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    } catch {
+        Write-Error "Failed to extract: $_"
+        $script:hadError = $true
+        Remove-WorkDir $workDir
+        return
+    }
 
     # Find ffmpeg.exe in extracted files (inside bin/ subdirectory)
     $found = Get-ChildItem $extractDir -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
     if ($found) {
         Copy-Item $found.FullName $targetExe -Force
-        Remove-Item $extractDir -Recurse -Force
+        Remove-WorkDir $workDir
         Write-Host "  Installed to $targetExe" -ForegroundColor Green
     } else {
-        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-WorkDir $workDir
         Write-Error "ffmpeg.exe not found after extraction"
+        $script:hadError = $true
     }
 }
 
@@ -124,4 +189,8 @@ if ($Tools -eq "all" -or $Tools -eq "dumpbin") { Install-Dumpbin }
 if ($Tools -eq "all" -or $Tools -eq "ffmpeg") { Install-FFmpeg }
 
 Write-Host ""
+if ($script:hadError) {
+    Write-Host "Done with errors." -ForegroundColor Red
+    exit 1
+}
 Write-Host "Done." -ForegroundColor Yellow

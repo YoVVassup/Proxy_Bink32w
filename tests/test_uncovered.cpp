@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "test_helpers.h"
 #include <cstdio>
+#include <string>
 
 // ============================================================================
 // test_uncovered.cpp — Tests for TrackVideo, LogCallStack, EnsureInitialized,
@@ -9,6 +10,29 @@
 
 extern BOOL EnsureInitialized();
 extern void LogCallStack(int skip);
+
+// ============================================================================
+// Global init-state guard
+//
+// Every proxy stub calls EnsureInitialized() before forwarding.
+// Tests drive the stubs directly with mock function pointers, so the deferred
+// loader must not run behind their back: pin the state to "already initialized"
+// for the whole run. Tests that exercise the loader itself flip it back to 0.
+// ============================================================================
+
+namespace {
+class InitStateGuard : public ::testing::Environment {
+public:
+    void SetUp() override {
+        saved = g_initState;
+        g_initState = 2;
+    }
+    void TearDown() override { g_initState = saved; }
+    LONG saved = 0;
+};
+::testing::Environment* const g_initStateGuard =
+    ::testing::AddGlobalTestEnvironment(new InitStateGuard());
+}
 
 // ============================================================================
 // Mock BinkGetSummary
@@ -131,8 +155,9 @@ TEST_F(TrackVideoTest, ZeroDimensionsSkipped) {
 
 TEST_F(TrackVideoTest, InitializesFields) {
     TrackVideo((void*)0x1000, "test.bik", NULL);
-    EXPECT_EQ(g_vids[0].tempBuf, (void*)NULL);
-    EXPECT_EQ(g_vids[0].scaleLookupX, (int*)NULL);
+    ASSERT_NE(g_vids[0].scale, (ScaleBufs*)NULL);
+    EXPECT_EQ(g_vids[0].scale->tempBuf, (void*)NULL);
+    EXPECT_EQ(g_vids[0].scale->lookupX, (int*)NULL);
     EXPECT_EQ(g_vids[0].wavPlayer, (WavPlayer*)NULL);
     EXPECT_STREQ(g_vids[0].wavPath, "");
 }
@@ -147,7 +172,7 @@ TEST_F(TrackVideoTest, StoresFrameRate) {
 TEST_F(TrackVideoTest, SkipsWavPathWhenFileNotFound) {
     // Set up an audio mapping that points to a non-existent file
     int savedMapCount = g_audioMapCount;
-    AudioMap savedMaps[64];
+    AudioMap savedMaps[MAX_AUDIO_MAPS];
     memcpy(savedMaps, g_audioMaps, sizeof(savedMaps));
 
     g_audioMapCount = 1;
@@ -168,14 +193,14 @@ TEST_F(TrackVideoTest, SkipsWavPathWhenFileNotFound) {
 TEST_F(TrackVideoTest, KeepsWavPathWhenFileExists) {
     // Use the real test WAV file from third-party
     int savedMapCount = g_audioMapCount;
-    AudioMap savedMaps[64];
+    AudioMap savedMaps[MAX_AUDIO_MAPS];
     memcpy(savedMaps, g_audioMaps, sizeof(savedMaps));
 
     char savedDllDir[MAX_PATH];
     memcpy(savedDllDir, g_dllDir, MAX_PATH);
 
     // Set g_dllDir to project root so third-party/ path resolves
-    lstrcpynA(g_dllDir, TEST_DATA_DIR "\\..\\..\\", MAX_PATH);
+    _snprintf_s(g_dllDir, sizeof(g_dllDir), _TRUNCATE, "%s\\", ProjectRootDir());
 
     g_audioMapCount = 1;
     strncpy_s(g_audioMaps[0].bikName, sizeof(g_audioMaps[0].bikName), "test.bik", _TRUNCATE);
@@ -196,18 +221,78 @@ TEST_F(TrackVideoTest, KeepsWavPathWhenFileExists) {
 
 // ============================================================================
 // LogCallStack tests
+//
+// LogCallStack() only reports through the logger, so each test routes the log
+// into its own file under tests/data and counts the entries it produced -
+// "the call returned" alone would never fail.
 // ============================================================================
 
+namespace {
+class LogCapture {
+public:
+    LogCapture() {
+        ShutdownLog();                       // close whatever the previous test left open
+        savedEnabled = g_logEnabled;
+        memcpy(savedDir, g_dllDir, MAX_PATH);
+        _snprintf_s(dir, sizeof(dir), _TRUNCATE, "%s\\", TestDataDir());
+        lstrcpynA(g_dllDir, dir, MAX_PATH);
+        path = std::string(g_dllDir) + "binkw32_proxy.log";
+        DeleteFileA(path.c_str());
+        g_logEnabled = TRUE;
+        InitLog();
+    }
+    ~LogCapture() {
+        ShutdownLog();
+        g_logEnabled = savedEnabled;
+        lstrcpynA(g_dllDir, savedDir, MAX_PATH);
+    }
+    int Count(const char* needle) const {
+        // CreateFile with read+write sharing: the logger keeps the file open
+        // for writing, which the CRT fopen() sharing default rejects.
+        HANDLE h = CreateFileA(path.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) return -1;
+        std::string content;
+        char buf[4096];
+        DWORD n = 0;
+        while (ReadFile(h, buf, sizeof(buf), &n, NULL) && n > 0) content.append(buf, n);
+        CloseHandle(h);
+        int count = 0;
+        size_t pos = 0;
+        while ((pos = content.find(needle, pos)) != std::string::npos) {
+            count++;
+            pos += strlen(needle);
+        }
+        return count;
+    }
+    std::string Path() const { return path; }
+
+private:
+    BOOL savedEnabled;
+    char savedDir[MAX_PATH];
+    char dir[MAX_PATH];
+    std::string path;
+};
+}
+
 TEST(LogCallStackTest, DoesNotCrash) {
+    LogCapture log;
     LogCallStack(0);
     LogCallStack(1);
     LogCallStack(2);
-    SUCCEED();
+    EXPECT_GE(log.Count("Call stack:"), 1) << "each captured stack must be logged";
 }
 
 TEST(LogCallStackTest, LargeSkip) {
+    LogCapture log;
+    LogCallStack(0);
+    EXPECT_EQ(log.Count("Call stack:"), 1);
+
+    // skip=100 exceeds the captured depth: frames == 0 -> early return,
+    // nothing may be appended.
     LogCallStack(100);
-    SUCCEED();
+    EXPECT_EQ(log.Count("Call stack:"), 1) << "over-skipped capture must not log";
 }
 
 // ============================================================================
@@ -215,10 +300,28 @@ TEST(LogCallStackTest, LargeSkip) {
 // ============================================================================
 
 TEST(EnsureInitializedTest, Idempotent) {
+    LONG saved = g_initState;
+    g_initState = 0;
+    EnsureInitialized();
+    LONG afterFirst = g_initState;
+    EXPECT_NE(afterFirst, 0) << "first call must advance the state";
     EnsureInitialized();
     EnsureInitialized();
-    EnsureInitialized();
-    SUCCEED();
+    EXPECT_EQ(g_initState, afterFirst) << "later calls must not change the state";
+    g_initState = saved;
+}
+
+// Every stub must kick off the deferred loader, not just BinkOpen.
+// sBinkGetError is used because it is argument-free and side-effect free even
+// if the real DLL did get resolved.
+extern "C" intptr_t __stdcall sBinkGetError();
+
+TEST(EnsureInitializedTest, StubTriggersInit) {
+    LONG saved = g_initState;
+    g_initState = 0;
+    sBinkGetError();
+    EXPECT_NE(g_initState, 0) << "stubs must call EnsureInitialized before forwarding";
+    g_initState = saved;
 }
 
 // ============================================================================
@@ -243,9 +346,7 @@ protected:
 
     void TearDown() override {
         for (int i = 0; i < g_vidCount; i++) {
-            if (g_vids[i].tempBuf) { VirtualFree(g_vids[i].tempBuf, 0, MEM_RELEASE); g_vids[i].tempBuf = NULL; }
-            if (g_vids[i].scaleLookupX) { free(g_vids[i].scaleLookupX); g_vids[i].scaleLookupX = NULL; }
-            if (g_vids[i].scaleLookupY) { free(g_vids[i].scaleLookupY); g_vids[i].scaleLookupY = NULL; }
+            if (g_vids[i].scale) { ScaleBufsUnref(g_vids[i].scale); g_vids[i].scale = NULL; }
         }
         pBinkCopyToBuffer = savedCopy;
         pBinkGetSummary = savedSummary;
@@ -288,11 +389,12 @@ TEST_F(ScalingTest, ScalingWhenSmallerDestination) {
     EXPECT_EQ(g_copyCalled, 1);
     VideoInfo* vi = FindVideo((void*)0x1000);
     ASSERT_NE(vi, (VideoInfo*)NULL);
-    EXPECT_NE(vi->tempBuf, (void*)NULL);
-    EXPECT_NE(vi->scaleLookupX, (int*)NULL);
-    EXPECT_NE(vi->scaleLookupY, (int*)NULL);
-    EXPECT_GT(vi->scaleTableW, 0);
-    EXPECT_GT(vi->scaleTableH, 0);
+    ASSERT_NE(vi->scale, (ScaleBufs*)NULL);
+    EXPECT_NE(vi->scale->tempBuf, (void*)NULL);
+    EXPECT_NE(vi->scale->lookupX, (int*)NULL);
+    EXPECT_NE(vi->scale->lookupY, (int*)NULL);
+    EXPECT_GT(vi->scale->tableW, 0);
+    EXPECT_GT(vi->scale->tableH, 0);
     free(dstBuf);
 }
 
@@ -310,16 +412,17 @@ TEST_F(ScalingTest, ScalingLookupTablesCorrect) {
 
     VideoInfo* vi = FindVideo((void*)0x1000);
     ASSERT_NE(vi, (VideoInfo*)NULL);
-    EXPECT_EQ(vi->scaleTableW, 400);
-    EXPECT_EQ(vi->scaleTableH, 300);
+    ASSERT_NE(vi->scale, (ScaleBufs*)NULL);
+    EXPECT_EQ(vi->scale->tableW, 400);
+    EXPECT_EQ(vi->scale->tableH, 300);
 
     for (int x = 0; x < 400; x++) {
-        EXPECT_GE(vi->scaleLookupX[x], 0);
-        EXPECT_LT(vi->scaleLookupX[x], 800);
+        EXPECT_GE(vi->scale->lookupX[x], 0);
+        EXPECT_LT(vi->scale->lookupX[x], 800);
     }
     for (int y = 0; y < 300; y++) {
-        EXPECT_GE(vi->scaleLookupY[y], 0);
-        EXPECT_LT(vi->scaleLookupY[y], 600);
+        EXPECT_GE(vi->scale->lookupY[y], 0);
+        EXPECT_LT(vi->scale->lookupY[y], 600);
     }
     free(dstBuf);
 }
@@ -340,7 +443,8 @@ TEST_F(ScalingTest, ScalingWithOffset) {
     EXPECT_EQ(g_copyCalled, 1);
     VideoInfo* vi = FindVideo((void*)0x1000);
     ASSERT_NE(vi, (VideoInfo*)NULL);
-    EXPECT_NE(vi->tempBuf, (void*)NULL);
+    ASSERT_NE(vi->scale, (ScaleBufs*)NULL);
+    EXPECT_NE(vi->scale->tempBuf, (void*)NULL);
     free(dstBuf);
 }
 
@@ -360,7 +464,8 @@ TEST_F(ScalingTest, NoScalingForNonRgb565) {
     EXPECT_EQ(g_copyCalled, 1);
     VideoInfo* vi = FindVideo((void*)0x1000);
     ASSERT_NE(vi, (VideoInfo*)NULL);
-    EXPECT_EQ(vi->tempBuf, (void*)NULL);
+    ASSERT_NE(vi->scale, (ScaleBufs*)NULL);
+    EXPECT_EQ(vi->scale->tempBuf, (void*)NULL) << "non-RGB565 path must not allocate the scratch buffer";
     free(dstBuf);
 }
 
@@ -377,13 +482,16 @@ TEST_F(ScalingTest, TempBufferCached) {
         (void*)480, (void*)0, (void*)0, (void*)2);
 
     VideoInfo* vi = FindVideo((void*)0x1000);
-    void* firstBuf = vi->tempBuf;
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    ASSERT_NE(vi->scale, (ScaleBufs*)NULL);
+    void* firstBuf = vi->scale->tempBuf;
+    ASSERT_NE(firstBuf, (void*)NULL);
 
     sBinkCopyToBuffer(
         (void*)0x1000, dstBuf, (void*)(intptr_t)dstPitch,
         (void*)480, (void*)0, (void*)0, (void*)2);
 
-    EXPECT_EQ(vi->tempBuf, firstBuf);
+    EXPECT_EQ(vi->scale->tempBuf, firstBuf);
     free(dstBuf);
 }
 
@@ -403,7 +511,8 @@ TEST_F(ScalingTest, NegativeDestXYSkipsScaling) {
     EXPECT_EQ(g_copyCalled, 1);
     VideoInfo* vi = FindVideo((void*)0x1000);
     ASSERT_NE(vi, (VideoInfo*)NULL);
-    EXPECT_EQ(vi->tempBuf, (void*)NULL);
+    ASSERT_NE(vi->scale, (ScaleBufs*)NULL);
+    EXPECT_EQ(vi->scale->tempBuf, (void*)NULL) << "negative dest must not allocate the scratch buffer";
     free(dstBuf);
 }
 
@@ -435,16 +544,235 @@ TEST(SBinkCloseTest, UntracksVideo) {
 
 // ============================================================================
 // BinkSetSoundTrack adapter tests
+//
+// The real DLL exports this function at two arities (@8 in generations with
+// the track-list form, @4 with the single-value form). Forwarding the wrong
+// one unbalances the caller's stack — the proxy crashed with 0xC0000005 until
+// the arity was probed at load. Every combination of stub and real arity is
+// covered here.
 // ============================================================================
 
-TEST(SoundTrackAdapterTest, BinkSetSoundTrack8DoesNotCrash) {
-    sBinkSetSoundTrack8((void*)0x1000, (void*)0);
-    SUCCEED();
+namespace {
+int g_stCalls = 0;
+void* g_stA = NULL;
+void* g_stB = NULL;
+void* g_stBValue = NULL;
+bool g_stCaptureBValue = false;
+void __stdcall MockSetSoundTrack8(void* a, void* b) {
+    g_stCalls++;
+    g_stA = a;
+    g_stB = b;
+    // Captured while the callee's frame is still live: the local the pointer
+    // refers to is dead as soon as the stub returns, and gtest's own stream
+    // machinery would overwrite it before EXPECT read it. Opt-in — other tests
+    // pass sentinel values such as (void*)7 that must not be dereferenced.
+    if (g_stCaptureBValue && b) g_stBValue = *(void**)b;
+}
+void __stdcall MockSetSoundTrack4(void* a) {
+    g_stCalls++;
+    g_stA = a;
+    g_stB = (void*)0xDEAD;   // must never be written by a 1-arg forward
+    g_stBValue = NULL;
+}
 }
 
-TEST(SoundTrackAdapterTest, BinkSetSoundTrack4DoesNotCrash) {
+class SoundTrackArityGuard {
+public:
+    SoundTrackArityGuard() : savedArity(g_soundTrackArity) {}
+    ~SoundTrackArityGuard() {
+        g_soundTrackArity = savedArity;
+        g_stCaptureBValue = false;   // also on the ASSERT-abort path
+    }
+private:
+    int savedArity;
+};
+
+TEST(SoundTrackAdapterTest, TwoArgRealReceivesBothArguments) {
+    SoundTrackArityGuard guard;
+    void* saved = pBinkSetSoundTrack;
+    g_stCalls = 0;
+    g_stA = g_stB = g_stBValue = NULL;
+    pBinkSetSoundTrack = (void*)&MockSetSoundTrack8;
+    g_soundTrackArity = 8;
+
+    sBinkSetSoundTrack8((void*)0x1000, (void*)0x7);
+
+    EXPECT_EQ(g_stCalls, 1);
+    EXPECT_EQ(g_stA, (void*)0x1000);
+    EXPECT_EQ(g_stB, (void*)0x7);
+
+    pBinkSetSoundTrack = saved;
+}
+
+TEST(SoundTrackAdapterTest, SingleArgRealReceivesTheFirstRequestedTrack) {
+    SoundTrackArityGuard guard;
+    void* saved = pBinkSetSoundTrack;
+    g_stCalls = 0;
+    g_stA = g_stB = NULL;
+    pBinkSetSoundTrack = (void*)&MockSetSoundTrack4;
+    g_soundTrackArity = 4;
+    // @8 carries (count, list); the single-value real must see list[0], not
+    // the count — otherwise "play these 3 tracks" is stored as track 3.
+    DWORD track = 7;
+    void* list = &track;
+
+    sBinkSetSoundTrack8((void*)3, list);
+
+    ASSERT_EQ(g_stCalls, 1) << "single-argument real must still be called once";
+    EXPECT_EQ(g_stA, (void*)7);
+    EXPECT_EQ(g_stB, (void*)0xDEAD) << "no second argument may be written";
+
+    pBinkSetSoundTrack = saved;
+}
+
+TEST(SoundTrackAdapterTest, FourByteStubToTwoArgRealPassesOneRealEntry) {
+    SoundTrackArityGuard guard;
+    void* saved = pBinkSetSoundTrack;
+    g_stCalls = 0;
+    g_stA = g_stB = g_stBValue = NULL;
+    g_stCaptureBValue = true;
+    pBinkSetSoundTrack = (void*)&MockSetSoundTrack8;
+    g_soundTrackArity = 8;
+
     sBinkSetSoundTrack4((void*)0x1000);
-    SUCCEED();
+
+    ASSERT_EQ(g_stCalls, 1);
+    EXPECT_EQ(g_stA, (void*)1) << "count must be one real entry";
+    EXPECT_TRUE(g_stB != NULL) << "the list pointer must never be NULL";
+    EXPECT_EQ(g_stBValue, (void*)0x1000);
+
+    g_stCaptureBValue = false;
+    pBinkSetSoundTrack = saved;
+}
+
+TEST(SoundTrackAdapterTest, FourByteStubToFourByteRealPassesTheValue) {
+    SoundTrackArityGuard guard;
+    void* saved = pBinkSetSoundTrack;
+    g_stCalls = 0;
+    g_stA = g_stB = g_stBValue = NULL;
+    pBinkSetSoundTrack = (void*)&MockSetSoundTrack4;
+    g_soundTrackArity = 4;
+
+    sBinkSetSoundTrack4((void*)0x1000);
+
+    EXPECT_EQ(g_stCalls, 1);
+    EXPECT_EQ(g_stA, (void*)0x1000);
+
+    pBinkSetSoundTrack = saved;
+}
+
+TEST(SoundTrackAdapterTest, NullForwardPointerIsIgnored) {
+    SoundTrackArityGuard guard;
+    void* saved = pBinkSetSoundTrack;
+    g_stCalls = 0;
+    pBinkSetSoundTrack = NULL;
+
+    sBinkSetSoundTrack8((void*)0x1000, (void*)0x7);
+    sBinkSetSoundTrack4((void*)0x1000);
+
+    EXPECT_EQ(g_stCalls, 0) << "no forward pointer must mean no call";
+
+    pBinkSetSoundTrack = saved;
+}
+
+// ============================================================================
+// YUV blit arity adaptation
+//
+// The same class of defect: our export is decorated @48, but the real DLL may
+// carry @36..@60. The forward must push exactly what the callee pops; an
+// unknown arity must be dropped rather than guessed.
+// ============================================================================
+
+namespace {
+int g_yuvCalls = 0;
+void* g_yuvA = NULL;
+void* g_yuvI = NULL;
+void* g_yuvL = NULL;
+void __stdcall MockYuv12(void* a, void* b, void* c, void* d, void* e, void* f,
+                         void* g, void* h, void* i, void* j, void* k, void* l) {
+    g_yuvCalls++;
+    g_yuvA = a;
+    g_yuvI = i;
+    g_yuvL = l;
+}
+void __stdcall MockYuv9(void* a, void* b, void* c, void* d, void* e, void* f,
+                        void* g, void* h, void* i) {
+    g_yuvCalls++;
+    g_yuvA = a;
+    g_yuvI = i;
+    g_yuvL = (void*)0xDEAD;
+}
+}
+
+TEST(YuvArityTest, ForwardsWithTheRealArity) {
+    void* savedPtr = pYUV_blit_16bpp;
+    int savedArity = g_yuvArity[YUV_A_16bpp];
+    g_yuvCalls = 0;
+    g_yuvA = g_yuvI = g_yuvL = NULL;
+    pYUV_blit_16bpp = (void*)&MockYuv12;
+    g_yuvArity[YUV_A_16bpp] = 48;
+
+    sYUV_blit_16bpp((void*)1, (void*)2, (void*)3, (void*)4, (void*)5, (void*)6,
+                    (void*)7, (void*)8, (void*)9, (void*)10, (void*)11, (void*)12);
+
+    ASSERT_EQ(g_yuvCalls, 1);
+    EXPECT_EQ(g_yuvA, (void*)1);
+    EXPECT_EQ(g_yuvI, (void*)9);
+    EXPECT_EQ(g_yuvL, (void*)12);
+
+    pYUV_blit_16bpp = savedPtr;
+    g_yuvArity[YUV_A_16bpp] = savedArity;
+}
+
+TEST(YuvArityTest, NarrowerRealDropsTheTrailingArguments) {
+    void* savedPtr = pYUV_blit_16bpp;
+    int savedArity = g_yuvArity[YUV_A_16bpp];
+    g_yuvCalls = 0;
+    g_yuvA = g_yuvI = g_yuvL = NULL;
+    pYUV_blit_16bpp = (void*)&MockYuv9;
+    g_yuvArity[YUV_A_16bpp] = 36;
+
+    sYUV_blit_16bpp((void*)1, (void*)2, (void*)3, (void*)4, (void*)5, (void*)6,
+                    (void*)7, (void*)8, (void*)9, (void*)10, (void*)11, (void*)12);
+
+    ASSERT_EQ(g_yuvCalls, 1) << "a 9-argument real must be called with 9 arguments";
+    EXPECT_EQ(g_yuvA, (void*)1);
+    EXPECT_EQ(g_yuvI, (void*)9);
+    EXPECT_EQ(g_yuvL, (void*)0xDEAD) << "arguments past the callee's arity must not be read";
+
+    pYUV_blit_16bpp = savedPtr;
+    g_yuvArity[YUV_A_16bpp] = savedArity;
+}
+
+TEST(YuvArityTest, UnknownArityIsDroppedInsteadOfGuessed) {
+    void* savedPtr = pYUV_blit_16bpp;
+    int savedArity = g_yuvArity[YUV_A_16bpp];
+    g_yuvCalls = 0;
+    pYUV_blit_16bpp = (void*)&MockYuv12;
+    g_yuvArity[YUV_A_16bpp] = 0;
+
+    sYUV_blit_16bpp((void*)1, (void*)2, (void*)3, (void*)4, (void*)5, (void*)6,
+                    (void*)7, (void*)8, (void*)9, (void*)10, (void*)11, (void*)12);
+
+    EXPECT_EQ(g_yuvCalls, 0) << "unknown arity must not be forwarded";
+
+    pYUV_blit_16bpp = savedPtr;
+    g_yuvArity[YUV_A_16bpp] = savedArity;
+}
+
+TEST(YuvArityTest, NullForwardPointerIsIgnored) {
+    void* savedPtr = pYUV_blit_16bpp;
+    int savedArity = g_yuvArity[YUV_A_16bpp];
+    g_yuvCalls = 0;
+    pYUV_blit_16bpp = NULL;
+
+    sYUV_blit_16bpp((void*)1, (void*)2, (void*)3, (void*)4, (void*)5, (void*)6,
+                    (void*)7, (void*)8, (void*)9, (void*)10, (void*)11, (void*)12);
+
+    EXPECT_EQ(g_yuvCalls, 0);
+
+    pYUV_blit_16bpp = savedPtr;
+    g_yuvArity[YUV_A_16bpp] = savedArity;
 }
 
 // ============================================================================
@@ -575,6 +903,17 @@ protected:
     }
 };
 
+namespace {
+int g_pauseCalls = 0;
+void* g_pauseA = NULL;
+void* g_pauseB = NULL;
+void __stdcall MockPause(void* a, void* b) {
+    g_pauseCalls++;
+    g_pauseA = a;
+    g_pauseB = b;
+}
+}
+
 TEST_F(SBinkPauseTest, PauseWithPlayer) {
     void* handle = (void*)0x1000;
     WavPlayer* pl = SetupVideoWithPlayer(handle);
@@ -598,14 +937,34 @@ TEST_F(SBinkPauseTest, ResumeWithPlayer) {
 TEST_F(SBinkPauseTest, PauseWithoutPlayer) {
     void* handle = (void*)0x1000;
     TrackVideo(handle, "test.bik", NULL);
+    int before = g_playerCount;
 
     sBinkPause(handle, (void*)1);
-    SUCCEED();
+
+    VideoInfo* vi = FindVideo(handle);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    EXPECT_TRUE(vi->pauseRequested)
+        << "pause request must be remembered until the player exists";
+    EXPECT_EQ(g_playerCount, before) << "pause must not allocate a player";
 }
 
 TEST_F(SBinkPauseTest, UnknownHandle) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    pl->paused = FALSE;
+
+    g_pauseCalls = 0;
+    g_pauseA = g_pauseB = NULL;
+    pBinkPause = (void*)&MockPause;
+
     sBinkPause((void*)0x9999, (void*)1);
-    SUCCEED();
+
+    EXPECT_EQ(g_pauseCalls, 1) << "unknown handle must still forward to the real DLL";
+    EXPECT_EQ(g_pauseA, (void*)0x9999);
+    EXPECT_EQ(g_pauseB, (void*)1);
+    EXPECT_FALSE(pl->paused) << "unknown handle must not touch an existing player";
+    EXPECT_EQ(g_playerCount, 1) << "unknown handle must not create a player";
 }
 
 TEST_F(SBinkPauseTest, PauseResumeCycle) {
@@ -624,6 +983,48 @@ TEST_F(SBinkPauseTest, PauseResumeCycle) {
 
     sBinkPause(handle, (void*)0);
     EXPECT_FALSE(pl->paused);
+}
+
+TEST_F(SBinkPauseTest, ResumeDoesNotUnmuteSilencedPlayer) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    void* savedSound = pBinkSetSoundOnOff;
+    pBinkSetSoundOnOff = (void*)&MockSetSoundOnOff;
+    g_setSoundOnOffCalled = 0;
+
+    // The game silenced the movie: the replacement player must stop.
+    sBinkSetSoundOnOff(handle, (void*)0);
+    EXPECT_TRUE(pl->paused) << "sound off must pause the replacement player";
+
+    // ...and an explicit resume must not undo that silence.
+    sBinkPause(handle, (void*)0);
+    EXPECT_TRUE(pl->paused)
+        << "BinkPause(0) must not resume a player the game silenced";
+
+    pBinkSetSoundOnOff = savedSound;
+}
+
+TEST_F(SBinkPauseTest, SoundOnDoesNotResumePausedVideo) {
+    void* handle = (void*)0x1000;
+    WavPlayer* pl = SetupVideoWithPlayer(handle);
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+
+    sBinkPause(handle, (void*)1);
+    ASSERT_TRUE(pl->paused);
+
+    void* savedSound = pBinkSetSoundOnOff;
+    pBinkSetSoundOnOff = (void*)&MockSetSoundOnOff;
+    g_setSoundOnOffCalled = 0;
+
+    sBinkSetSoundOnOff(handle, (void*)1);
+
+    EXPECT_TRUE(pl->paused)
+        << "SetSoundOnOff(1) must not resume a video the game paused";
+    EXPECT_EQ(g_setSoundOnOffCalled, 1);
+
+    pBinkSetSoundOnOff = savedSound;
 }
 
 // ============================================================================
@@ -684,6 +1085,19 @@ protected:
     }
 };
 
+namespace {
+int g_gotoCalls = 0;
+void* g_gotoA = NULL;
+void* g_gotoB = NULL;
+void* g_gotoC = NULL;
+void __stdcall MockGoto(void* a, void* b, void* c) {
+    g_gotoCalls++;
+    g_gotoA = a;
+    g_gotoB = b;
+    g_gotoC = c;
+}
+}
+
 TEST_F(SBinkGotoTest, SeekToFrame0) {
     void* handle = (void*)0x1000;
     WavPlayer* pl = SetupVideoWithPlayer(handle);
@@ -710,16 +1124,29 @@ TEST_F(SBinkGotoTest, SeekToFrame10) {
 TEST_F(SBinkGotoTest, SeekWithoutPlayer) {
     void* handle = (void*)0x1000;
     TrackVideo(handle, "test.bik", NULL);
+    int before = g_playerCount;
 
     pBinkGoto = NULL;
     sBinkGoto(handle, (void*)5, NULL);
-    SUCCEED();
+
+    VideoInfo* vi = FindVideo(handle);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    EXPECT_EQ(vi->wavPlayer, (WavPlayer*)NULL) << "seek must not create a player";
+    EXPECT_EQ(g_playerCount, before);
 }
 
 TEST_F(SBinkGotoTest, UnknownHandle) {
-    pBinkGoto = NULL;
+    int before = g_playerCount;
+    g_gotoCalls = 0;
+    g_gotoA = g_gotoB = g_gotoC = NULL;
+    pBinkGoto = (void*)&MockGoto;
+
     sBinkGoto((void*)0x9999, (void*)5, NULL);
-    SUCCEED();
+
+    EXPECT_EQ(g_gotoCalls, 1) << "unknown handle must still forward to the real DLL";
+    EXPECT_EQ(g_gotoA, (void*)0x9999);
+    EXPECT_EQ(g_gotoB, (void*)5);
+    EXPECT_EQ(g_playerCount, before) << "unknown handle must not allocate a player";
 }
 
 TEST_F(SBinkGotoTest, NullSummaryFnSkipsSeek) {
@@ -841,6 +1268,27 @@ TEST_F(SBinkSetVolume2Test, MutesAlwaysZero) {
     SetupVideoWithPlayer(handle);
 
     sBinkSetVolume2(handle, (void*)0xFFFF);
+    EXPECT_EQ(g_setVolumeArg, (void*)0);
+}
+
+TEST_F(SBinkSetVolume2Test, LongApiForwardsVolumeValue) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    // Long API: (bnk, trackid=100, volume=0x5999). The track id only exists
+    // in the long real DLL, so the short real DLL must see the volume.
+    sBinkSetVolume3(handle, (void*)100, (void*)0x5999);
+    EXPECT_EQ(g_setVolumeCalled, 1);
+    EXPECT_EQ(g_setVolumeHandle, handle);
+    EXPECT_EQ(g_setVolumeArg, (void*)0x5999);
+}
+
+TEST_F(SBinkSetVolume2Test, LongApiMutesWithPlayer) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetVolume3(handle, (void*)100, (void*)0x5999);
+    EXPECT_EQ(g_setVolumeCalled, 1);
     EXPECT_EQ(g_setVolumeArg, (void*)0);
 }
 
@@ -1027,21 +1475,110 @@ TEST_F(SBinkSetPanTest, ForwardsWithoutReplacement) {
     void* handle = (void*)0x1000;
     TrackVideo(handle, "test.bik", NULL);
 
+    // Long API: (bnk, trackid=100, pan=200). The track id only exists in the
+    // long real DLL, so the short real DLL must see the pan value.
     sBinkSetPan(handle, (void*)100, (void*)200);
     EXPECT_EQ(g_setPanCalled, 1);
     EXPECT_EQ(g_setPanHandle, handle);
-    EXPECT_EQ(g_setPanArg1, (void*)100);
+    EXPECT_EQ(g_setPanArg1, (void*)200);
 }
 
 TEST_F(SBinkSetPanTest, UnknownHandleForwards) {
     sBinkSetPan((void*)0x9999, (void*)100, (void*)200);
     EXPECT_EQ(g_setPanCalled, 1);
-    EXPECT_EQ(g_setPanArg1, (void*)100);
+    EXPECT_EQ(g_setPanArg1, (void*)200);
 }
 
 TEST_F(SBinkSetPanTest, ForwardsNullArgs) {
     sBinkSetPan(NULL, NULL, NULL);
     EXPECT_EQ(g_setPanCalled, 1);
+}
+
+TEST_F(SBinkSetPanTest, ShortApiForwardsPanValue) {
+    void* handle = (void*)0x1000;
+    TrackVideo(handle, "test.bik", NULL);
+
+    // Short API: (bnk, pan=200).
+    sBinkSetPan2(handle, (void*)200);
+    EXPECT_EQ(g_setPanCalled, 1);
+    EXPECT_EQ(g_setPanHandle, handle);
+    EXPECT_EQ(g_setPanArg1, (void*)200);
+}
+
+TEST_F(SBinkSetPanTest, ShortApiMutesWithReplacement) {
+    void* handle = (void*)0x1000;
+    SetupVideoWithPlayer(handle);
+
+    sBinkSetPan2(handle, (void*)200);
+    EXPECT_EQ(g_setPanCalled, 0);
+}
+
+// ============================================================================
+// sBinkSetMixBins tests
+//
+// The test build is group 5, whose real DLL takes the long
+// (bnk, trackid, mix_bins, total) form.
+// ============================================================================
+
+int g_setMixBinsCalled = 0;
+void* g_mixBinsHandle = NULL;
+void* g_mixBinsTrack = NULL;
+void* g_mixBinsBins = NULL;
+void* g_mixBinsTotal = NULL;
+
+void __stdcall MockSetMixBins(void* a, void* b, void* c, void* d) {
+    g_setMixBinsCalled++;
+    g_mixBinsHandle = a;
+    g_mixBinsTrack = b;
+    g_mixBinsBins = c;
+    g_mixBinsTotal = d;
+}
+
+class SBinkSetMixBinsTest : public ::testing::Test {
+protected:
+    void* savedMixBins;
+    int savedCount;
+
+    void SetUp() override {
+        savedMixBins = pBinkSetMixBins;
+        savedCount = g_vidCount;
+        pBinkSetMixBins = (void*)MockSetMixBins;
+        g_vidCount = 0;
+        g_setMixBinsCalled = 0;
+        g_mixBinsHandle = NULL;
+        g_mixBinsTrack = NULL;
+        g_mixBinsBins = NULL;
+        g_mixBinsTotal = NULL;
+        g_mW = 640;
+        g_mH = 480;
+        g_mFR = 30;
+        g_mFRD = 1;
+    }
+
+    void TearDown() override {
+        pBinkSetMixBins = savedMixBins;
+        g_vidCount = savedCount;
+    }
+};
+
+TEST_F(SBinkSetMixBinsTest, LongApiForwardsAllArgs) {
+    void* handle = (void*)0x1000;
+    sBinkSetMixBins(handle, (void*)100, (void*)0xAAAA, (void*)0xBBBB);
+    EXPECT_EQ(g_setMixBinsCalled, 1);
+    EXPECT_EQ(g_mixBinsHandle, handle);
+    EXPECT_EQ(g_mixBinsTrack, (void*)100);
+    EXPECT_EQ(g_mixBinsBins, (void*)0xAAAA);
+    EXPECT_EQ(g_mixBinsTotal, (void*)0xBBBB);
+}
+
+TEST_F(SBinkSetMixBinsTest, ShortApiOmitsTrackAndCount) {
+    void* handle = (void*)0x1000;
+    sBinkSetMixBins2(handle, (void*)0xAAAA);
+    EXPECT_EQ(g_setMixBinsCalled, 1);
+    EXPECT_EQ(g_mixBinsHandle, handle);
+    EXPECT_EQ(g_mixBinsTrack, (void*)0);   // the short API has no track id
+    EXPECT_EQ(g_mixBinsBins, (void*)0xAAAA);
+    EXPECT_EQ(g_mixBinsTotal, (void*)0);   // ...and no entry count
 }
 
 // ============================================================================
@@ -1249,11 +1786,77 @@ TEST_F(SBinkDoFrameTest, UnknownHandleStillForwards) {
 }
 
 TEST_F(SBinkDoFrameTest, NullPtrFunctionDoesNotCrash) {
+    g_doFrameCalled = 0;
     pBinkDoFrame = NULL;
     TrackVideo((void*)0x1000, "test.bik", NULL);
 
     sBinkDoFrame((void*)0x1000);
-    SUCCEED();
+
+    EXPECT_EQ(g_doFrameCalled, 0) << "NULL forward pointer must not be called";
+    EXPECT_NE(FindVideo((void*)0x1000), (VideoInfo*)NULL)
+        << "tracking must survive a frame with no forward target";
+}
+
+// The device refused a buffer: WaveOutProc cleared `playing` while PCM is left
+// (pcmPos < pcmSize). The proxy must abandon the replacement instead of
+// leaving the movie silent for the rest of its runtime.
+TEST_F(SBinkDoFrameTest, DeadPlayerFallsBackToOriginalAudio) {
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+    VideoInfo* vi = FindVideo((void*)0x1000);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    strncpy_s(vi->wavPath, sizeof(vi->wavPath), "test.wav", _TRUNCATE);
+    vi->wavStarted = true;   // skip the start attempt, we attach the player below
+    vi->soundReqSet = TRUE;
+    vi->soundOn = TRUE;
+
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    vi->wavPlayer = pl;
+    pl->hWave = (HWAVEOUT)0x12345678;
+    pl->playing = FALSE;     // stream died
+    pl->paused = FALSE;
+    pl->pcmSize = 4096;
+    pl->pcmPos = 1024;       // ...with data still unplayed
+
+    void* savedSound = pBinkSetSoundOnOff;
+    pBinkSetSoundOnOff = (void*)&MockSetSoundOnOff;
+    g_setSoundOnOffCalled = 0;
+
+    sBinkDoFrame((void*)0x1000);
+
+    vi = FindVideo((void*)0x1000);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    EXPECT_EQ(vi->wavPlayer, (WavPlayer*)NULL) << "dead player must be abandoned";
+    EXPECT_TRUE(vi->wavFailed) << "fallback must be permanent for this video";
+    EXPECT_EQ(g_setSoundOnOffCalled, 1) << "original sound state must be pushed back";
+    EXPECT_EQ(g_setSoundOnOffArg, (void*)1);
+
+    pBinkSetSoundOnOff = savedSound;
+}
+
+// A clip that simply finished has pcmPos == pcmSize: that is not a failure.
+TEST_F(SBinkDoFrameTest, FinishedClipKeepsPlayer) {
+    TrackVideo((void*)0x1000, "test.bik", NULL);
+    VideoInfo* vi = FindVideo((void*)0x1000);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    strncpy_s(vi->wavPath, sizeof(vi->wavPath), "test.wav", _TRUNCATE);
+    vi->wavStarted = true;
+
+    WavPlayer* pl = AllocPlayer();
+    ASSERT_NE(pl, (WavPlayer*)NULL);
+    vi->wavPlayer = pl;
+    pl->hWave = (HWAVEOUT)0x12345678;
+    pl->playing = FALSE;
+    pl->paused = FALSE;
+    pl->pcmSize = 4096;
+    pl->pcmPos = 4096;       // fully played
+
+    sBinkDoFrame((void*)0x1000);
+
+    vi = FindVideo((void*)0x1000);
+    ASSERT_NE(vi, (VideoInfo*)NULL);
+    EXPECT_EQ(vi->wavPlayer, pl) << "end of clip must not be treated as a failure";
+    EXPECT_FALSE(vi->wavFailed);
 }
 
 // ============================================================================

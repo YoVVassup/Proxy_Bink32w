@@ -23,6 +23,8 @@ EXPORTS
     _BinkSetVideoOnOff@8=_sBinkSetVideoOnOff@8 @21
     _BinkSetSoundOnOff@8=_sBinkSetSoundOnOff@8 @22
     _BinkSetVolume@8=_sBinkSetVolume2@8 @23
+    _BinkSetVolume@12=_sBinkSetVolume3@12 @109
+    _BinkSetPan@8=_sBinkSetPan2@8 @110
     _BinkSetPan@12=_sBinkSetPan@12 @24
     _BinkSetSpeakerVolumes@20=_sBinkSetSpeakerVolumes@20 @25
     _BinkService@4=_sBinkService@4 @26
@@ -76,6 +78,7 @@ EXPORTS
     _BinkRequestStopAsyncThread@4=_sBinkRequestStopAsyncThread@4 @74
     _BinkWaitStopAsyncThread@4=_sBinkWaitStopAsyncThread@4 @75
     _BinkSetMixBins@16=_sBinkSetMixBins@16 @76
+    _BinkSetMixBins@8=_sBinkSetMixBins2@8 @111
     _BinkSetMixBinVolumes@20=_sBinkSetMixBinVolumes@20 @77
     _ExpandBink@56=_sExpandBink@56 @78
     _ExpandBundleSizes@8=_sExpandBundleSizes@8 @79

@@ -109,6 +109,11 @@ $skipVersions = @("0.5a", "0.8a", "0.8e", "0.8f", "0.8h", "0.8i", "0.9d", "0.9f"
 # Extract exports from a single DLL
 function Get-Exports($dllPath) {
     $output = & $dumpbin /exports $dllPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # A silent skip here shrinks the group count without anyone noticing.
+        Write-Error "dumpbin /exports failed for $dllPath (exit code $LASTEXITCODE)"
+        exit 1
+    }
     $exports = @{}
     foreach ($line in $output) {
         if ($line -match '^\s+(\d+)\s+\w+\s+\w+\s+_(\w+?)(?:@\d+)?$') {
@@ -116,6 +121,10 @@ function Get-Exports($dllPath) {
             $name = $Matches[2]
             $exports[$ordinal] = $name
         }
+    }
+    if ($exports.Count -eq 0) {
+        Write-Error "no exports parsed from $dllPath - unexpected dumpbin output format"
+        exit 1
     }
     return $exports
 }
@@ -143,8 +152,9 @@ foreach ($f in $files) {
     elseif ($baseName -match '^(.+)-binkw?32$') { $version = $Matches[1] }
     else { $version = $baseName }
     if ($version -in $skipVersions) { continue }
+    # Get-Exports exits with an error on a failed/empty dumpbin run instead of
+    # letting the DLL disappear from the group analysis.
     $exports = Get-Exports $f.FullName
-    if ($exports.Count -eq 0) { continue }
 
     $sig = Get-Signature $exports
     if (-not $groups.ContainsKey($sig)) {

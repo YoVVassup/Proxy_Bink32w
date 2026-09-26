@@ -5,6 +5,10 @@
 
 extern void LogF(const char* fmt, ...);
 
+#ifndef WAVE_FORMAT_EXTENSIBLE
+#define WAVE_FORMAT_EXTENSIBLE 0xFFFE
+#endif
+
 // ============================================================================
 // audio_decoder.cpp — Unified WAV + OGG decoder
 //
@@ -42,10 +46,15 @@ static BOOL DecodeWav(const char* path, DecodedAudio* out) {
     DWORD sampleRate = 0;
     WORD bitsPerSample = 0;
     DWORD dataSize = 0;
+    DWORD dataPos = 0;
     BOOL foundFmt = FALSE;
     BOOL foundData = FALSE;
 
-    while (SetFilePointer(hFile, 0, NULL, FILE_CURRENT) < fileSize - 8) {
+    for (;;) {
+        LONG pos = SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
+        if (pos < 0) break;
+        if ((DWORD)pos > fileSize || fileSize - (DWORD)pos < 8) break;
+
         char chunkId[4];
         DWORD chunkSize;
         if (!ReadFile(hFile, chunkId, 4, &read, NULL) || read != 4) break;
@@ -55,26 +64,88 @@ static BOOL DecodeWav(const char* path, DecodedAudio* out) {
             char fmtData[16];
             if (!ReadFile(hFile, fmtData, 16, &read, NULL) || read != 16) break;
             WORD formatTag = (WORD)((unsigned char)fmtData[0] | ((unsigned char)fmtData[1] << 8));
-            if (formatTag != WAVE_FORMAT_PCM) {
-                CloseHandle(hFile); return FALSE;
-            }
             channels = (WORD)((unsigned char)fmtData[2] | ((unsigned char)fmtData[3] << 8));
             sampleRate = (unsigned char)fmtData[4] | ((unsigned char)fmtData[5] << 8) |
                          ((unsigned char)fmtData[6] << 16) | ((unsigned char)fmtData[7] << 24);
             bitsPerSample = (WORD)((unsigned char)fmtData[14] | ((unsigned char)fmtData[15] << 8));
+            DWORD consumed = 16;
+            if (formatTag == WAVE_FORMAT_EXTENSIBLE) {
+                // WAVEFORMATEXTENSIBLE = base 16 + cbSize(2) + validBits(2) +
+                // channelMask(4) + SubFormat GUID(16) = 40 bytes. Only PCM
+                // sub-format is playable here (IEEE float, ADPCM, ... are not);
+                // a shorter chunk cannot hold the GUID at all.
+                if (chunkSize < 40) {
+                    LogF("Audio decode rejected: truncated WAVE_FORMAT_EXTENSIBLE fmt "
+                         "chunk (%u bytes) in %s", (unsigned)chunkSize, path);
+                    CloseHandle(hFile); return FALSE;
+                }
+                char extData[24];
+                if (!ReadFile(hFile, extData, 24, &read, NULL) || read != 24) break;
+                consumed = 40;
+                WORD cbSize = (WORD)((unsigned char)extData[0] | ((unsigned char)extData[1] << 8));
+                // KSDATAFORMAT_SUBTYPE_PCM = {00000001-0000-0010-8000-00AA00389B71}
+                static const unsigned char kPcmGuid[16] = {
+                    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+                    0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+                if (cbSize < 22 || memcmp(extData + 8, kPcmGuid, sizeof(kPcmGuid)) != 0) {
+                    LogF("Audio decode rejected: non-PCM WAVE_FORMAT_EXTENSIBLE sub-format "
+                         "in %s (only PCM is supported)", path);
+                    CloseHandle(hFile); return FALSE;
+                }
+            } else if (formatTag != WAVE_FORMAT_PCM) {
+                LogF("Audio decode rejected: format tag 0x%04X in %s "
+                     "(only PCM and PCM WAVE_FORMAT_EXTENSIBLE are supported)",
+                     (unsigned)formatTag, path);
+                CloseHandle(hFile); return FALSE;
+            }
             foundFmt = TRUE;
-            DWORD skipFmt = chunkSize - 16;
-            if (chunkSize > 16 && skipFmt <= fileSize - (DWORD)SetFilePointer(hFile, 0, NULL, FILE_CURRENT))
-                SetFilePointer(hFile, skipFmt, NULL, FILE_CURRENT);
+            // Skip the fmt extension *including* the RIFF pad byte of an
+            // odd chunkSize, and bail out instead of mis-parsing a truncated one.
+            DWORD skipFmt = chunkSize - consumed + (chunkSize & 1);
+            LONG fmtPos = SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
+            if (fmtPos < 0 || (DWORD)fmtPos > fileSize ||
+                skipFmt > fileSize - (DWORD)fmtPos) {
+                CloseHandle(hFile); return FALSE;
+            }
+            if (skipFmt) {
+                // Bound-checked above, so the target cannot be
+                // INVALID_FILE_POSITION (0xFFFFFFFF) — a negative result can
+                // only mean the seek itself failed, and continuing would parse
+                // from the wrong offset instead of rejecting the file.
+                LONG after = SetFilePointer(hFile, skipFmt, NULL, FILE_CURRENT);
+                if (after < 0 || (DWORD)after > fileSize) {
+                    CloseHandle(hFile);
+                    return FALSE;
+                }
+            }
+            // A valid RIFF may list `data` before `fmt `; the payload position
+            // is already saved, so stop as soon as both halves are known.
+            if (foundData) break;
         } else if (memcmp(chunkId, "data", 4) == 0) {
-            DWORD remaining = fileSize - (DWORD)SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
+            LONG payload = SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
+            if (payload < 0 || (DWORD)payload > fileSize) break;
+            DWORD remaining = fileSize - (DWORD)payload;
             dataSize = chunkSize < remaining ? chunkSize : remaining;
+            dataPos = (DWORD)payload;
             foundData = TRUE;
-            break;
+            if (foundFmt) break;
+            // `fmt ` is still ahead: remember the payload and jump over it
+            // instead of rejecting a correctly ordered file.
+            DWORD skip = dataSize + (dataSize & 1);
+            if (skip > fileSize - dataPos) break;
+            if (skip) {
+                LONG seeked = SetFilePointer(hFile, skip, NULL, FILE_CURRENT);
+                if (seeked < 0) break;
+            }
         } else {
             if (chunkSize > 0x7FFFFFFF) break;
+            LONG before = SetFilePointer(hFile, 0, NULL, FILE_CURRENT);
+            if (before < 0) break;
             DWORD skip = chunkSize + (chunkSize & 1);
-            SetFilePointer(hFile, skip, NULL, FILE_CURRENT);
+            LONG after = SetFilePointer(hFile, skip, NULL, FILE_CURRENT);
+            // A legal zero-length chunk skips 0 bytes (after == before);
+            // Only a backwards seek means the file position is broken.
+            if (after < 0 || after < before) break;
         }
     }
 
@@ -82,9 +153,26 @@ static BOOL DecodeWav(const char* path, DecodedAudio* out) {
         CloseHandle(hFile); return FALSE;
     }
 
+    // Garbage guard only — the real playable limits are enforced in
+    // ValidatePlayable() so the log names the actual cause. This one still
+    // has to say why it refused: a silent FALSE here hides a file the guard
+    // rejected for a reason no caller can see.
     if (channels > 8 || (bitsPerSample != 8 && bitsPerSample != 16)) {
+        LogF("Audio decode rejected: %u channels, %u bits in %s "
+             "(WAV decoder limit: 8 channels, 8/16-bit)",
+             (unsigned)channels, (unsigned)bitsPerSample, path);
         CloseHandle(hFile); return FALSE;
     }
+
+    // waveOut consumes whole frames: drop a trailing partial frame and refuse
+    // a payload that cannot hold even one.
+    WORD blockAlign = (WORD)((channels * bitsPerSample) / 8);
+    if (blockAlign == 0 || dataSize < blockAlign) { CloseHandle(hFile); return FALSE; }
+    dataSize -= dataSize % blockAlign;
+
+    // The payload may sit before the fmt chunk — reposition explicitly.
+    LONG dataStart = SetFilePointer(hFile, dataPos, NULL, FILE_BEGIN);
+    if (dataStart < 0) { CloseHandle(hFile); return FALSE; }
 
     out->format.wFormatTag = WAVE_FORMAT_PCM;
     out->format.nChannels = channels;
@@ -147,15 +235,58 @@ static BOOL DecodeOgg(const char* path, DecodedAudio* out) {
 
     short* pcm16 = (short*)out->pcmData;
     int decoded = stb_vorbis_get_samples_short_interleaved(v, channels, pcm16, totalSamples * channels);
-    if (decoded < 0) decoded = 0;
-    out->pcmSize = (DWORD)((uint64_t)decoded * channels * 2);
-
     stb_vorbis_close(v);
+
+    // A zero-length decode must not be reported as success — the player
+    // would queue an empty buffer, never receive WOM_DONE and pin the slot.
+    if (decoded <= 0) {
+        LogF("stb_vorbis: no samples decoded from %s", path);
+        VirtualFree(out->pcmData, 0, MEM_RELEASE);
+        out->pcmData = NULL;
+        out->pcmSize = 0;
+        return FALSE;
+    }
+    out->pcmSize = (DWORD)((uint64_t)decoded * channels * 2);
     return TRUE;
 }
 
+// Reject formats waveOut cannot open (or that would overflow its
+// per-second arithmetic) with a message that names the real cause, instead of
+// letting them surface as a bare WAVERR_BADFORMAT.
+static BOOL ValidatePlayable(const char* path, DecodedAudio* out) {
+    unsigned ch = out->format.nChannels;
+    unsigned rate = out->format.nSamplesPerSec;
+
+    if (ch < 1 || ch > 2) {
+        LogF("Audio rejected: %u channels in %s (waveOut supports mono/stereo only); "
+             "the original Bink audio will be used", ch, path);
+    } else if (rate < 1000 || rate > 192000) {
+        // Upper bound keeps nAvgBytesPerSec = rate * nBlockAlign inside DWORD
+        // (max 192000 * 4 = 768000) and keeps bufSize sane.
+        LogF("Audio rejected: %u Hz in %s (supported range 1000..192000 Hz); "
+             "the original Bink audio will be used", rate, path);
+    } else if (out->format.nBlockAlign == 0 || out->format.nAvgBytesPerSec == 0) {
+        LogF("Audio rejected: inconsistent format in %s (rate=%u align=%u avg=%u); "
+             "the original Bink audio will be used", path, rate,
+             (unsigned)out->format.nBlockAlign,
+             (unsigned)out->format.nAvgBytesPerSec);
+    } else {
+        return TRUE;
+    }
+
+    if (out->pcmData) VirtualFree(out->pcmData, 0, MEM_RELEASE);
+    memset(out, 0, sizeof(DecodedAudio));
+    return FALSE;
+}
+
+// Extension of the file *name*: a dot inside a directory component
+// (C:\v1.2\track) must not be mistaken for an extension.
 static const char* GetExtension(const char* path) {
-    const char* dot = strrchr(path, '.');
+    const char* base = path;
+    for (const char* p = path; *p; p++) {
+        if (*p == '\\' || *p == '/') base = p + 1;
+    }
+    const char* dot = strrchr(base, '.');
     return dot ? dot : "";
 }
 
@@ -164,9 +295,12 @@ BOOL DecodeAudioFile(const char* path, DecodedAudio* out) {
     memset(out, 0, sizeof(DecodedAudio));
 
     const char* ext = GetExtension(path);
-    if (_stricmp(ext, ".ogg") == 0)
-        return DecodeOgg(path, out);
-    if (_stricmp(ext, ".wav") == 0)
-        return DecodeWav(path, out);
-    return FALSE;
+    BOOL ok;
+    if (_stricmp(ext, ".ogg") == 0)      ok = DecodeOgg(path, out);
+    else if (_stricmp(ext, ".wav") == 0) ok = DecodeWav(path, out);
+    else return FALSE;
+    // FALSE must mean "empty": callers free out->pcmData only when it is set.
+    if (!ok) { memset(out, 0, sizeof(DecodedAudio)); return FALSE; }
+
+    return ValidatePlayable(path, out);
 }

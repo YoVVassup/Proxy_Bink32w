@@ -79,3 +79,9 @@ foreach ($wav in $wavFiles) {
 }
 
 Write-Host ("`nDone: {0} converted, {1} failed" -f $converted, $failed) -ForegroundColor Cyan
+
+if ($failed -gt 0) {
+    Write-Host "$failed file(s) failed to convert" -ForegroundColor Red
+    exit 1
+}
+exit 0

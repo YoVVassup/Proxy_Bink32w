@@ -380,14 +380,22 @@ TEST(BinkContainer, FilePointerRestoredOnInvalidFile) {
 // ============================================================================
 
 TEST(BinkContainer, ValidMarkers) {
-    // Valid Bink markers as stored on disk: BIK + revision byte
-    // ReadU32 returns little-endian: 'B'=0x42, 'I'=0x49, 'K'=0x4B, rev=0x66-0x69
-    // So the uint32 value is 0x6X424942 (e.g. 'fKIB'=0x66424942)
+    // Valid Bink markers as stored on disk: BIK + revision byte.
+    // ReadU32 returns little-endian: 'B'=0x42, 'I'=0x49, 'K'=0x4B, rev=byte.
+    // So the uint32 value is 0xXX424942 (e.g. 'fKIB'=0x66424942).
+    //
+    // Bink 1 revisions in the wild: b, d, f, g, h, i, k (ffmpeg demuxer and
+    // vgmstream agree; 'j' is Bink 2 only). f..i were the only ones accepted
+    // until the BIKb/BIKd/BIKk fix, so the older/never-covered ones are here
+    // deliberately — dropping them would re-open the hole.
     struct { uint32_t value; uint8_t bytes[4]; } validMarkers[] = {
+        {0x62424942, {0x42, 0x49, 0x4B, 0x62}},  // BIKb (Bink 1.0b, "old" codec)
+        {0x64424942, {0x42, 0x49, 0x4B, 0x64}},  // BIKd
         {0x66424942, {0x42, 0x49, 0x4B, 0x66}},  // BIKf
         {0x67424942, {0x42, 0x49, 0x4B, 0x67}},  // BIKg
         {0x68424942, {0x42, 0x49, 0x4B, 0x68}},  // BIKh
         {0x69424942, {0x42, 0x49, 0x4B, 0x69}},  // BIKi
+        {0x6B424942, {0x42, 0x49, 0x4B, 0x6B}},  // BIKk (adds a dword at 0x2C)
     };
 
     for (const auto& m : validMarkers) {
@@ -412,12 +420,17 @@ TEST(BinkContainer, ValidMarkers) {
 }
 
 TEST(BinkContainer, InvalidMarkersRejected) {
-    // Invalid markers: bytes that don't match BIK + valid revision
+    // Invalid markers: bytes that don't match BIK + a Bink 1 revision.
+    // BIKj and KB2a guard the BIKb/BIKd/BIKk widening — the revision list was
+    // deliberately widened, and these two are the neighbouring bytes that
+    // must still be refused ('j' is Bink 2 only; 'KB2' is the Bink 2 magic).
     struct { uint32_t value; uint8_t bytes[4]; } invalidMarkers[] = {
         {0x00000000, {0x00, 0x00, 0x00, 0x00}},  // null
         {0x41524544, {0x44, 0x45, 0x52, 0x41}},  // 'AREA'
         {0x4D504547, {0x47, 0x45, 0x50, 0x4D}},  // 'GEMP'
         {0xFFFFFFFF, {0xFF, 0xFF, 0xFF, 0xFF}},  // all 0xFF
+        {0x6A424942, {0x42, 0x49, 0x4B, 0x6A}},  // BIKj — Bink 2 revision
+        {0x6132424B, {0x4B, 0x42, 0x32, 0x61}},  // KB2a — Bink 2 magic
     };
 
     for (const auto& m : invalidMarkers) {

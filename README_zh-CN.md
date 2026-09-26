@@ -1,9 +1,9 @@
 # Proxy_Bink32w — Bink Video API Proxy DLL
 
-[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4./)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20(x86)-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-green)
-![Tests](https://img.shields.io/badge/Tests-306%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-438%20passed-brightgreen)
 ![Bink](https://img.shields.io/badge/Bink-67%20versions-orange)
 
 [English](README.md) | [Русский](README_ru.md) | [繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
@@ -25,8 +25,10 @@ gamemd.exe → binkw32.dll (proxy) → binkw32_1.0q.dll (real Bink SDK)
 
 ## ⚙️ 环境要求
 
-- MSVC（Visual Studio 2022 或更新版本）
+- MSVC（Visual Studio 2022 或更新版本；编译示例使用 `Visual Studio 18 2026` 生成器 — 请替换为已安装 VS 的生成器）
 - CMake 3.28+
+
+运行时无需 Visual C++ Redistributable：代理与测试可执行文件链接**静态**运行时（`/MT`，`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`），因此 `binkw32.dll` 仅依赖 `KERNEL32.dll`/`WINMM.dll`。
 
 ## 🏗️ 编译
 
@@ -35,7 +37,7 @@ gamemd.exe → binkw32.dll (proxy) → binkw32_1.0q.dll (real Bink SDK)
 cmake -B build -G "Visual Studio 18 2026" -A Win32
 cmake --build build --config Release
 
-# 构建全部 19 组（顺序构建 — 并行构建会导致 binkw32.exp 链接器竞争）
+# 构建全部 19 组（每组输出到自己的 GROUP_N/ 目录，并行构建安全）
 cmake -B build -DBINK_GROUPS="all" -G "Visual Studio 18 2026" -A Win32
 cmake --build build --config Release
 
@@ -72,17 +74,18 @@ build_tests\tests\Release\bink32w_tests.exe
 
 ### 📈 测试覆盖率
 
-306 个测试分布在 41 个测试套件中，覆盖所有核心模块：
+438 个测试分布在 50 个测试套件中，覆盖所有核心模块：
 
 | 模块 | 测试数 | 覆盖率 |
 |------|--------|--------|
-| config.cpp（CRC32、.mix 解析器、.bik 头、.wav 解码器、配置解析器） | 78 | 100% |
-| binkw32_proxy.cpp（TrackVideo、UntrackVideo、FindVideo、缩放、DLL 生命周期、ExtractFileName、BINKIOPROCESSOR、CCFileClass、BinkSetPan、BinkSetWillLoop、BinkWait） | 89 | 100% |
-| wav_player.cpp（分配、释放、启动、停止、暂停、恢复、跳转） | 35 | 100% |
-| logging.cpp（Log、LogF、TrimRight） | 13 | 100% |
-| audio_decoder.cpp（WAV、OGG、负面测试） | 21 | 100% |
-| 损坏数据测试（畸形 .mix、.bik、.wav、配置） | 26 | — |
-| 集成测试（DLL 导出、序数、真实文件、WAV 解码） | 14 | — |
+| config.cpp（CRC32、.mix 解析器、.bik 头、.wav 解码器、配置解析器、base dir） | 103 | 100% |
+| binkw32_proxy.cpp（TrackVideo、UntrackVideo、FindVideo、缩放、DLL 生命周期、ExtractFileName、BINKIOPROCESSOR、CCFileClass、BinkSetPan、BinkSetWillLoop、BinkWait、ReadU32/ReadU16、BppFromFlags、SetSoundTrack/YUV 参数适配） | 152 | 100% |
+| wav_player.cpp（分配、释放、启动、停止、暂停、恢复、跳转） | 55 | 100% |
+| logging.cpp（Log、LogF、TrimRight） | 18 | 100% |
+| audio_decoder.cpp（WAV、OGG、负面测试） | 24 | 100% |
+| mix_crypto.cpp（Blowfish 密钥派生、加密 .mix） | 17 | 100% |
+| 损坏数据测试（畸形 .mix、.bik、.wav、配置） | 35 | — |
+| 集成测试（DLL 导出、序数、真实文件、WAV 解码、代理流程） | 19 | — |
 | 第三方（OGG、WAV、跨格式、.mix） | 15 | — |
 
 ## 📦 安装
@@ -91,7 +94,7 @@ build_tests\tests\Release\bink32w_tests.exe
 2. 将其中的 `binkw32.dll` 重命名以替换游戏原始文件
 3. 启动游戏
 
-如果真实 DLL 缺失，将出现错误消息对话框。
+如果真实 DLL 缺失，不会弹出对话框：错误会写入 `binkw32_proxy.log`，所有 Bink 调用返回 NULL/失败。
 
 ## 🎮 Bink 版本兼容性
 
@@ -143,16 +146,16 @@ build_tests\tests\Release\bink32w_tests.exe
 | **7** | **1.9q-1.9u (3)** | **73 序数, BinkSetMemory** | **最佳视频质量** |
 | 8 | 1.0v-1.0x (3) | RADSetMemory，无 ExpandBink | 1.0x 后期 |
 | 9 | 1.8a-1.8b (2) | BinkControlBackgroundIO, BinkShouldSkip | 早期 DX9 |
-| 10 | 1.2i-1.5a (2) | BinkDX8SurfaceType, BinkSetMemory | 早期-中期 |
+| 10 | 1.2i-1.5a (2) | BinkDX8SurfaceType, RADSetMemory | 早期-中期 |
 | 11 | 1.1b-1.2a (2) | BinkDX8SurfaceType, RADSetMemory | 早期 1.x |
 | 12 | 1.2c-1.2d (2) | BinkSetMixBins | — |
 | 13 | 1.1c (1) | BinkDX8SurfaceType, RADTimerRead | — |
 | 14 | 1.0k (1) | 无 BinkSetIO, ExpandBink | — |
-| 15 | 1.0m (1) | ExpandBink + ExpandBundleSizes | — |
+| 15 | 1.0m (1) | BinkSetIO, ExpandBink + ExpandBundleSizes | — |
 | 16 | 1.0h (1) | YUV_blit 通用, ExpandBink | — |
 | 17 | 1.0i (1) | YUV_blit 通用, ExpandBink, RADTimerRead | — |
 | 18 | 1.7d (1) | BinkDX9SurfaceType, 86 序数 | — |
-| 19 | 1.0j (1) | 无 ExpandBink，仅 ExpandBundleSizes | — |
+| 19 | 1.0j (1) | ExpandBink + ExpandBundleSizes | — |
 
 ## 🎵 音频替换
 
@@ -160,8 +163,8 @@ build_tests\tests\Release\bink32w_tests.exe
 
 ### 支持格式
 
-- WAV：PCM，8/16 位，任意采样率，单声道/立体声（最多 8 声道）
-- OGG：Vorbis，任意采样率，单声道/立体声（通过 stb_vorbis）
+- WAV：PCM，8/16 位，1000–192000 Hz，1–2 声道（waveOut 限制）
+- OGG：Vorbis，1000–192000 Hz，1–2 声道（通过 stb_vorbis）
 - 相对路径（从 DLL 目录）和绝对路径
 
 ### WAV 转 OGG
@@ -198,22 +201,27 @@ Done: 980 converted, 42 failed
 
 `binkw32.cfg` 在构建期间复制到输出目录。编辑它以配置音频替换：
 
+
+> 下面的片段是**所有可用功能的示例**。随附的 `binkw32.cfg` 是最小可用版本：三条自动 base 目录条目（`|BinkWAV\...`），`[movies01]`/`[movies02]` 映射已注释，`[audio]` 为空。
 ```ini
-[exception]
-0=movies01.mix
-1=movies02.mix
-
-[movies01]
-a01_f00e.bik = BinkWAV\a01_f00e.wav
-a02_f00e.bik = BinkWAV\a02_f00e.ogg
-
-[movies02]
-s01_f00e.bik = BinkWAV\s01_f00e.wav
-s02_f00e.bik = BinkWAV\s02_f00e.ogg
-
 [log]
 ; enabled = false   ; 禁用所有日志（默认：true）
-; wait = true       ; 记录 BinkWait 调用（默认：false）
+; wait = true       ; 记录频繁调用：BinkWait、RADTimerRead、radmalloc 等（默认：false）
+
+[exception]
+; 仅 mix 名 — 使用下方 [mix] 段中的显式映射
+0=movies02.mix
+; mix 名 + 基础目录 — 自动：base\stem.ogg，然后 base\stem.wav
+1=movies01.mix|BinkWAV\RA2
+2=movmd03.mix|BinkWAV\RA2YR
+
+[movies01]
+; 显式映射优先于自动 base dir
+a01_f00e.bik = custom\a01_f00e.wav
+
+[movies02]
+a01_f00e.bik = BinkWAV\a01_f00e.wav
+a02_f00e.bik = BinkWAV\a02_f00e.ogg
 
 [audio]
 ; 全局回退（当 exception 中未找到时使用）
@@ -224,13 +232,19 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 
 `[exception]` 段的优先级**高于** `[audio]`。代理首先检查 `.mix` 归档名是否匹配 exception 条目，然后在该 exception 段中查找 `.bik` 文件名。如果未找到，则回退到全局 `[audio]` 段。
 
+**基础目录（`mix|base`）：** 每个 exception 条目可以在 `|` 后携带自己的相对目录。对于没有显式映射的 `.bik`，代理先解析 `base\stem.ogg`，再解析 `base\stem.wav`（相对 DLL 目录检查存在性）。两者都不存在 — 回退到 `[audio]`。没有 `|` 的条目 baseDir 为空（跳过自动解析）。快速切换音频包：只需修改 `|` 后的路径。
+
 保留的段名（`[audio]`、`[exception]`、`[log]`）不能用作 `.mix` exception 段名。
+
+**段顺序很重要：** `[exception]` 段必须出现在所有 `.mix` 段（如 `[movies01]`）**之前** — `.mix` 段在解析时与 exception 列表匹配；在 `[exception]` 之前声明（或从未声明）的 `.mix` 段会被忽略，日志中会记录 `WARNING: section [name] ignored — no matching entry in [exception]`。
+
+**`[log]` 的位置：** `[log]` 通过预扫描应用于整个文件，因此可以放在任意位置——解析其余配置时记录的日志已遵循 `enabled = false`。只识别 `enabled` 与 `wait` 两个键（否则输出 `WARNING: unknown [log] key '...'`）。
 
 ### 工作流程
 
 1. 调用 `BinkOpen` 时，代理解析 `.mix` 归档头和 LMD
 2. CRC32 哈希解析为原始 `.bik` 文件名
-3. 文件名先与 `[exception]`（按 `.mix` 名称）匹配，再与 `[audio]` 匹配
+3. 文件名先与 `[exception]`（按 `.mix` 名称：显式映射，然后 base dir）匹配，再与 `[audio]` 匹配
 4. 如果找到映射，音频文件（`.wav` 或 `.ogg`）被解码为 PCM 并通过 WaveOut 播放
 5. 替换视频的 Bink 音频自动静音（`BinkSetVolume` → 0）
 6. `BinkClose` 时停止播放
@@ -255,16 +269,17 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 - offset `0xA` 处的哈希表（每条目 12 字节：CRC32 + offset + size）
 - LMD 文件（CRC32 `0x366E051F`）包含 CRC32 → 文件名映射
 - CRC32 按 RA2 约定计算：大写 + 填充到 4 字节对齐
+- 加密归档（头部标志 `& 2`）：Blowfish-ECB — 密钥由头部的 80 字节 `key_source` 字段（offset 4）通过内置的 Westwood RSA 公钥派生，得到 56 字节 Blowfish 密钥（`src/mix_crypto.cpp`），解密后的索引按常规解析
 
 ## 📐 视频缩放
 
-当 `BinkCopyToBuffer` 的目标缓冲区小于视频分辨率时，代理使用**保持宽高比的适配缩放**（类似 CSS `object-fit: contain`）自动缩放帧。视频在目标缓冲区中居中，必要时添加黑边。
+当 `BinkCopyToBuffer` 的目标缓冲区小于视频分辨率时，代理使用**保持宽高比的适配缩放**（类似 CSS `object-fit: contain`）自动缩放帧。视频在目标缓冲区中居中；周围区域保持未填充，因此会自动呈现为黑边（通常为黑色）— 无需显式填充。
 
-缩放使用**带预计算查找表的最近邻算法**以实现最大速度。源视频以全分辨率渲染到临时缓冲区，然后使用查找表高效地复制到游戏缓冲区。DDraw 负责最终的屏幕拉伸——单次插值。
+缩放使用**带预计算查找表的最近邻算法**以实现最大速度。源视频（例如 1400×1080）以全分辨率渲染到临时缓冲区，然后使用查找表高效地复制到游戏缓冲区，该表将每个目标像素映射到源像素。DDraw 负责最终的屏幕拉伸——单次插值。
 
 ## 📝 日志记录
 
-日志文件 `binkw32_proxy.log` 创建在 DLL 目录。
+日志文件 `binkw32_proxy.log` 创建在 DLL 目录。日志会在启动时以及文件超过 **10 MB** 时自动轮转：`.log` → `.log.1` → … → `.log.9`，最旧的文件被删除。
 
 ### 日志选项
 
@@ -273,8 +288,10 @@ s01_f00e.bik = BinkWAV\s01_f00e.wav
 ```ini
 [log]
 enabled = false   ; 禁用所有日志（默认：true）
-wait = true       ; 记录 BinkWait 调用（默认：false）
+wait = true       ; 记录频繁调用：BinkWait、RADTimerRead、radmalloc 等（默认：false）
 ```
+
+布尔值接受 `true` / `1` / `yes` / `on` 与 `false` / `0` / `no` / `off`（其他值输出 `WARNING: [key] value ... not recognised` 并保持默认值）。前面带空格的 `;` 或 `#` 表示行尾注释；在 `C:\a;b` 这类路径中它们仍是值的一部分。缺少 `binkw32.cfg` 会记录一次 `Config not found: ...`，并在下次打开视频时重新查找——之后创建的配置依然生效。
 
 ## 🔄 @N 参数适配器
 
@@ -319,6 +336,7 @@ powershell -ExecutionPolicy Bypass -File tools\generate_ordinals.ps1
 
 ```
 Proxy_Bink32w/
+├── .gitignore               # git 忽略文件
 ├── CMakeLists.txt
 ├── LICENSE                  # CC BY-NC-SA 4.0
 ├── README.md                # English
@@ -326,13 +344,13 @@ Proxy_Bink32w/
 ├── README_zh-CN.md          # 简体中文
 ├── README_zh-TW.md          # 繁體中文
 ├── binkw32.cfg              # 音频替换配置
-├── Real/                    # 原始 Bink DLL（67 个兼容版本）
+├── Real/                    # 原始 Bink DLL（104 个文件：67 个支持版本 + 37 个排除版本；不受本项目许可证保护）
 │   ├── binkw32_1.0q.dll
 │   ├── binkw32_1.9u.dll
 │   └── ...
-├── tests/                   # Google Test 套件（306 个测试，41 个测试套件）
-│   ├── test_proxy_core.cpp  # TrackVideo、UntrackVideo、FindVideo
-│   ├── test_uncovered.cpp   # LogCallStack、EnsureInitialized、Scaling、sBinkClose、sBinkPause、sBinkGoto、sBinkSetVolume2、sBinkSetSoundOnOff、ExtractFileName
+├── tests/                   # Google Test 套件（438 个测试，50 个测试套件）
+│   ├── test_proxy_core.cpp  # FindVideo、UntrackVideo、ScaleBufs、TrackVideoSummary
+│   ├── test_uncovered.cpp   # TrackVideo、LogCallStack、EnsureInitialized、Scaling、SoundTrack/YUV 参数适配器、sBinkClose、sBinkPause、sBinkGoto、sBinkSetVolume2、sBinkSetSoundOnOff、sBinkSetPan、sBinkSetMixBins、sBinkSetWillLoop、sBinkWait、sBinkDoFrame、BinkOpenWithOptions、ExtractFileName
 │   ├── test_binkioprocessor.cpp # BINKIOPROCESSOR 标志处理、ExtractNameFromCCFileClass
 │   ├── test_corrupt_data.cpp # 损坏 .mix、.bik、.wav、配置的负面测试
 │   ├── test_config_parser.cpp
@@ -340,37 +358,70 @@ Proxy_Bink32w/
 │   ├── test_wav_player.cpp
 │   ├── test_bink_container.cpp
 │   ├── test_mix_crc32.cpp
+│   ├── test_mix_blowfish.cpp # 加密 .mix（Blowfish）、密钥派生
 │   ├── test_logging.cpp
 │   ├── test_integration.cpp
 │   ├── test_third_party.cpp
 │   └── ...
+├── third-party/             # 集成测试使用的真实游戏数据（不在项目许可范围内）
 ├── tools/
 │   ├── setup.ps1                # 从 GitHub 自动下载 dumpbin 和 ffmpeg
 │   ├── generate_ordinals.ps1    # 从 DLL 自动生成 ordinal 表
+│   ├── convert_wav_to_ogg.ps1   # 批量 WAV → OGG Vorbis 转换
+│   ├── test_bink_minimal.cpp    # 最小 Bink open/frame/close 测试工具
+│   ├── test_bink_player.cpp     # 交互式 Bink 播放器测试工具
 │   └── ordinals_map.json        # 版本→组映射
 └── src/
     ├── binkw32_proxy.h      # 共享类型、全局变量、函数声明
     ├── binkw32_proxy.cpp    # DLL 加载器、视频跟踪、代理导出
     ├── logging.cpp          # 日志子系统
     ├── config.cpp           # 配置解析、.mix 解析器、Bink 头读取
+    ├── mix_crypto.{h,cpp}   # 加密 .mix 的 Blowfish 解密（flags & 2）
+    ├── mix_blowfish_s0..s3.inl # Blowfish S-box（来自 ReSource）
+    ├── audio_decoder.h      # DecodedAudio 结构体、DecodeAudioFile 声明
     ├── audio_decoder.cpp    # 统一 WAV + OGG 解码器（stb_vorbis）
     ├── stb_vorbis.c         # OGG Vorbis 解码器（stb_vorbis v1.22，公共领域）
     ├── wav_player.cpp       # WaveOut 音频播放
     ├── ordinals.inc         # 自动生成的 ordinal 表（19 组）
-    ├── exports.def          # DLL 导出表（108 个导出）
+    ├── exports.def          # DLL 导出表（111 个导出）
     └── version_info.rc      # DLL 版本信息
 ```
 
 ## 🔗 相关项目
 
-- [dev-zetta/BikMod](https://github.com/dev-zetta/BikMod) — Command & Conquer 的 Bink 视频模组
+**游戏 / MIX 参考（本代理的构建依据）：**
+
+- [Ritanlisa/RA2YR_ReSource](https://github.com/Ritanlisa/RA2YR_ReSource) — RA2YR 反编译源码；MIX/CRC/Bink 内部实现的权威参考
 - [Aldrin-John-Olaer-Manalansan/RA2YR-reMIXer](https://github.com/Aldrin-John-Olaer-Manalansan/RA2YR-reMIXer) — MIX 文件解保护工具，支持 LMD 恢复
-- [vogonsorg/radgametools](https://github.com/vogonsorg/radgametools) — RAD Game Tools 库
-- [americusmaximus/Yoink](https://github.com/americusmaximus/Yoink) — 用于游戏模组的 Bink 代理
-- [dimhotepus/Bink-1-and-2-async-media-player](https://github.com/dimhotepus/Bink-1-and-2-async-media-player) — Bink 1 和 2 的异步媒体播放器
+- [secsome/CCFileSystem](https://github.com/secsome/CCFileSystem) — C# MIX 解析器（legacy/extended/Blowfish、CRC32）
+- [Phobos-developers/YRpp](https://github.com/Phobos-developers/YRpp) — 游戏类的 C++ 接口（`MixFileClass`、CRC 引擎）
+- [Everything-Compatible/YRDict](https://github.com/Everything-Compatible/YRDict) — WW 引擎实现，YRpp 的配套库
+- [SethGekco/YR-Hook-Encyclopedia](https://github.com/SethGekco/YR-Hook-Encyclopedia) — 3700+ 游戏地址与 hook 框架注册表
+
+**binkw32 代理 / 加载器（创意与交叉验证）：**
+
+- [Daodan DLL](https://wiki.oni2.net/Daodan_DLL) — 基于 binkw32 劫持的 Oni 模组载体（配置段、CLI 覆盖）
+- [Erik-JS/masseffect-binkw32](https://github.com/Erik-JS/masseffect-binkw32) — 支持 ASI 加载器的 binkw32 代理
+- [dev-zetta/BikMod](https://github.com/dev-zetta/BikMod) — Command & Conquer 的 Bink 视频模组（字幕/叠加层）
+- [americusmaximus/Yoink](https://github.com/americusmaximus/Yoink) — 用于游戏模组的 binkw32 代理
+- [ThirteenAG/Ultimate-ASI-Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) — 事实标准的 ASI 代理加载器（也可能占用 binkw32 — 请勿与本代理同时安装）
+- [elishacloud/dxwrapper](https://github.com/elishacloud/dxwrapper) — 具备丰富 INI 配置的包装器/stub-DLL 框架
+
+## ⚠️ 已知限制
+
+- 导出名称由 `exports.def` 固定（共 111 个）。音量/声像/混音 bin 相关函数同时导出**两种**修饰名——`_BinkSetVolume@8` 与 `@12`、`_BinkSetPan@8` 与 `@12`、`_BinkSetMixBins@8` 与 `@16`——因此导入其中任一签名的游戏都能加载代理，内部桩函数会把参数个数转换成该组所绑定的真实 DLL 的签名。`exports.def` 之外的修饰名仍然无法加载代理。
+- 不支持按序号导入 — 代理自身的序号固定在 `exports.def` 中，且有意与原始 DLL 不同（真实 `binkw32_1.0q.dll` 的 `_BinkOpen@8` 序号为 34，代理为 `@4`）；生成的 `ordinals.inc` 表仅在代理内部用于解析真实 DLL 中的函数。游戏必须按名称导入（RA2/RA2YR 即如此）。
+- 三个仅存在于 Bink **1.0h/1.0i** 的内部导出被有意排除在生成的表之外：`_ExpandPlane@44`、`_YUV_blit@56`、`_YUV_blit_mask@56`（1.0j 中它们再次消失）。这些是没有任何游戏会导入的渲染/解码辅助函数，因此 `tools/generate_ordinals.ps1` 不会把它们列入 `$knownFunctions`。若要加入，`exports.def` 将从 111 个导出增至 114 个，并需要重新构建全部 19 个分组。
+- 最多同时替换 8 个 WAV/OGG（`MAX_WAV_PLAYERS`；槽位在 `BinkClose` 时释放，因此顺序播放不受限制）。替换音频在**首次 `BinkDoFrame` 调用**（或 `BinkDoFrameAsync` — 代理将其视作帧调用）时启动，而非 `BinkOpen`。若此时槽位已满，替换不会启动（日志：`Failed to start WAV playback`），视频将保持静音 — 原始 Bink 音频仍会被静音（静音判断依据是已排队的路径，而非播放器）。
+- `binkw32.cfg` 容量：`[exception]` 最多 **64** 条（`MAX_EXCEPTION_MIXES`），每个 `[mix]` 段最多 **256** 条显式映射（`MAX_MAPS_PER_MIX`），`[audio]` 最多 **256** 条（`MAX_AUDIO_MAPS`）。超出的行会被丢弃并在日志中记录 `WARNING: ... limit reached`。auto base dir（`mix|base`）**不占用**映射额度 — 按需解析，仅受归档中 `.bik` 数量限制。
+- 其他固定上限：已解析 `.mix` 缓存 **8** 个槽位（固定大小，无淘汰 — 槽位用尽后新的 `.mix` 不再解析，这些视频保持原始音频，日志记录 `MixArchive cache full`），同时跟踪视频 **32** 个（`MAX_TRACKED`），单个 `.mix` 归档最多 **65535** 条（`MIX_MAX_FILES`，u16 格式限制）。路径（`mixName`、`baseDir`、`wavPath`）会静默截断至 `MAX_PATH`（260），配置行截断至 1023 字符，段名截断至 63 字符。
 
 ## 📜 许可证
 
 [CC BY-NC-SA 4.0](LICENSE) — Creative Commons 署名-非商业性-相同方式共享 4.0 国际许可协议
+
+### 第三方二进制文件（`Real/`）
+
+[`Real/`](Real/) 目录下的 Bink DLL（及其在构建输出 `GROUP_*` 目录中的副本）是 RAD Game Tools / 其权利人的专有二进制文件，**未经修改且不授予任何权利** — 上述项目许可证 **不适用于这些文件**。它们仅出于互操作性、测试和参考目的保留在仓库中，不得删除。
 
 作者：**YoWassup**

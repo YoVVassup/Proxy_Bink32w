@@ -520,3 +520,88 @@ TEST_F(AudioDecoderTest, UnknownChunkBeforeFmt) {
 
     if (audio.pcmData) VirtualFree(audio.pcmData, 0, MEM_RELEASE);
 }
+
+// ============================================================================
+// Container edge cases
+// ============================================================================
+
+TEST_F(AudioDecoderTest, DataBeforeFmt) {
+    // A legal RIFF may list `data` before `fmt `; the parser must remember
+    // the payload position, keep scanning, and read from it afterwards.
+    int16_t samples[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    uint32_t dataSize = sizeof(samples);
+    uint32_t fmtSize = 16;
+    uint32_t riffSize = 4 + (8 + dataSize) + (8 + fmtSize);
+
+    char path[MAX_PATH];
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%sdata_first.wav", tempDir);
+    FILE* f = NULL;
+    fopen_s(&f, path, "wb");
+    ASSERT_NE(f, (FILE*)NULL);
+
+    fwrite("RIFF", 1, 4, f);
+    fwrite(&riffSize, 4, 1, f);
+    fwrite("WAVE", 1, 4, f);
+
+    fwrite("data", 1, 4, f);
+    fwrite(&dataSize, 4, 1, f);
+    fwrite(samples, 1, dataSize, f);
+
+    fwrite("fmt ", 1, 4, f);
+    fwrite(&fmtSize, 4, 1, f);
+    uint16_t formatTag = 1, channels = 1, bitsPerSample = 16, blockAlign = 2;
+    uint32_t sampleRate = 22050, avgBytesPerSec = 44100;
+    fwrite(&formatTag, 2, 1, f);
+    fwrite(&channels, 2, 1, f);
+    fwrite(&sampleRate, 4, 1, f);
+    fwrite(&avgBytesPerSec, 4, 1, f);
+    fwrite(&blockAlign, 2, 1, f);
+    fwrite(&bitsPerSample, 2, 1, f);
+    fclose(f);
+
+    DecodedAudio audio = {0};
+    ASSERT_TRUE(DecodeAudioFile(path, &audio));
+    EXPECT_EQ(audio.format.nSamplesPerSec, 22050u);
+    ASSERT_NE(audio.pcmData, (char*)NULL);
+    EXPECT_EQ(audio.pcmSize, dataSize);
+    EXPECT_EQ(memcmp(audio.pcmData, samples, dataSize), 0)
+        << "payload must be read from its own position, not after fmt";
+
+    VirtualFree(audio.pcmData, 0, MEM_RELEASE);
+}
+
+TEST_F(AudioDecoderTest, PartialFrameDropped) {
+    // 16-bit mono => 2-byte frames; a 33-byte payload holds a partial frame
+    // waveOut would reject, so pcmSize must be cut back to 32.
+    uint8_t payload[33];
+    for (int i = 0; i < 33; i++) payload[i] = (uint8_t)i;
+
+    char path[MAX_PATH];
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%spartial_frame.wav", tempDir);
+    WriteWav("partial_frame.wav", 1, 22050, 16, payload, sizeof(payload));
+    ASSERT_TRUE(GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES);
+
+    DecodedAudio audio = {0};
+    ASSERT_TRUE(DecodeAudioFile(path, &audio));
+    EXPECT_EQ(audio.pcmSize, 32u);
+    EXPECT_EQ(audio.pcmSize % audio.format.nBlockAlign, 0u);
+    EXPECT_EQ(memcmp(audio.pcmData, payload, 32), 0);
+
+    VirtualFree(audio.pcmData, 0, MEM_RELEASE);
+}
+
+TEST_F(AudioDecoderTest, DecodeOggPcm) {
+    // OGG coverage for this suite (test_third_party.cpp exercises it too).
+    std::string path = std::string(THIRD_PARTY_DIR) + "\\a04_f00e.ogg";
+    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+        GTEST_SKIP() << "third-party OGG fixture not present";
+
+    DecodedAudio audio = {0};
+    ASSERT_TRUE(DecodeAudioFile(path.c_str(), &audio));
+    EXPECT_EQ(audio.format.wFormatTag, WAVE_FORMAT_PCM);
+    EXPECT_EQ(audio.format.wBitsPerSample, 16);
+    EXPECT_GT(audio.pcmSize, 0u);
+    EXPECT_NE(audio.pcmData, (char*)NULL);
+
+    VirtualFree(audio.pcmData, 0, MEM_RELEASE);
+}

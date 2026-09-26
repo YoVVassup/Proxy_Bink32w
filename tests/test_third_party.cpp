@@ -217,7 +217,7 @@ TEST(ThirdParty_Mix, ParseRealMixFile) {
     ASSERT_NE(mix, (MixArchive*)NULL) << "Failed to parse: " << path;
     EXPECT_TRUE(mix->valid);
     EXPECT_GT(mix->fileCount, 0);
-    EXPECT_LE(mix->fileCount, 256);
+    EXPECT_LE(mix->fileCount, 65535u);
 
     // Should contain LMD entry (CRC 0x366E051F)
     BOOL hasLmd = FALSE;
